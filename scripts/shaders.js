@@ -1,3 +1,4 @@
+// preprocess barriers and pack into cells?
 const initShaderCode = /* wgsl */`
 ${uni.uniformStruct}
 @group(0) @binding(0) var<uniform> uni: Uniforms;
@@ -32,9 +33,12 @@ fn main(
 }
 `;
 
-const clearPressureShaderCode = /* wgsl */`
+const clearPressureRefreshSmokeShaderCode = /* wgsl */`
 ${uni.uniformStruct}
-@group(0) @binding(0) var pressure:  texture_storage_3d<r32float, write>;
+@group(0) @binding(0) var<uniform> uni: Uniforms;
+@group(0) @binding(1) var pressure:  texture_storage_3d<r32float, write>;
+@group(0) @binding(2) var smokeOld:  texture_storage_3d<rg32float, write>;
+@group(0) @binding(3) var smokeNew:  texture_storage_3d<rg32float, write>;
 
 override WG_X: u32;
 override WG_Y: u32;
@@ -45,6 +49,16 @@ fn main(
   @builtin(global_invocation_id) gid: vec3u
 ) {
   textureStore(pressure, gid, vec4f(0));
+
+  let gid_f = vec3f(gid);
+  var smoke = vec4f(0,1,0,0);
+
+  // if (gid.x == 0 && all(abs(gid_f.yz - uni.smokePos.xy) <= uni.smokeHalfSize)) {
+  if (gid.x == 0) {
+    smoke.x = select(0.0, 1.0, abs(gid_f.z - uni.smokePos.x) <= uni.smokeHalfSize.x && gid_f.y % (2 * uni.smokeHalfSize.y) < uni.smokeHalfSize.y);
+    textureStore(smokeOld, gid, smoke);
+    textureStore(smokeNew, gid, smoke);
+  }
 }
 `;
 
@@ -95,7 +109,7 @@ fn main(
     
   let temp = newSmoke.y;
   let pressure = textureLoad(pressure, gid, 0).r;
-  // newVel += vec4f(0, pressure * (1 - 1 / temp), 0, 0);
+  // newVel += vec4f(0, pressure * (1 - 1 / temp), 0, 0); // rho1 = mP/(1 + (t1 - t0)), F=(rho_surrounding - rho)*g*V
   
   // interpolate and advect velocity
   textureStore(velNew, gid, newVel);
@@ -110,8 +124,8 @@ ${uni.uniformStruct}
 @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var vel:  texture_3d<f32>;
 @group(0) @binding(2) var div:  texture_storage_3d<r32float, write>;
-// @group(0) @binding(3) var curl: texture_storage_3d<r32float, write>;
-@group(0) @binding(3) var barrierTex: texture_3d<f32>;
+@group(0) @binding(3) var curl: texture_storage_3d<r32float, write>;
+@group(0) @binding(4) var barrierTex: texture_3d<f32>;
 
 override WG_X: u32;
 override WG_Y: u32;
@@ -141,29 +155,47 @@ fn main(
   if (isBarrier == 0) { return; }
 
   var divV = 0.0;
+
+  // curl = (dvz/dy - dvy/dz, dvx/dz - dvz/dx, dvy/dx - dvx/dy)
+  var curlV = vec3f(0);
   
   // only consider non-barrier (barrier != 0) neighbors
   if (textureLoad(barrierTex, gid_i + directions[0], 0).r != 0) {
-    divV -= textureLoad(vel, gid_i + directions[0], 0).x;
+    let vel = textureLoad(vel, gid_i + directions[0], 0).xyz;
+    divV -= vel.x;
+    curlV += vec3f(0, vel.z, -vel.y);
   }
   if (textureLoad(barrierTex, gid_i + directions[1], 0).r != 0) {
-    divV += textureLoad(vel, gid_i + directions[1], 0).x;
+    let vel = textureLoad(vel, gid_i + directions[1], 0).xyz;
+    divV += vel.x;
+    curlV += vec3f(0, -vel.z, vel.y);
   }
   if (textureLoad(barrierTex, gid_i + directions[2], 0).r != 0) {
-    divV -= textureLoad(vel, gid_i + directions[2], 0).y;
+    let vel = textureLoad(vel, gid_i + directions[2], 0).xyz;
+    divV -= vel.y;
+    curlV += vec3f(-vel.z, 0, vel.x);
   }
   if (textureLoad(barrierTex, gid_i + directions[3], 0).r != 0) {
-    divV += textureLoad(vel, gid_i + directions[3], 0).y;
+    let vel = textureLoad(vel, gid_i + directions[3], 0).xyz;
+    divV += vel.y;
+    curlV += vec3f(vel.z, 0, -vel.x);
   }
   if (textureLoad(barrierTex, gid_i + directions[4], 0).r != 0) {
-    divV -= textureLoad(vel, gid_i + directions[4], 0).z;
+    let vel = textureLoad(vel, gid_i + directions[4], 0).xyz;
+    divV -= vel.z;
+    curlV += vec3f(vel.y, -vel.x, 0);
   }
   if (textureLoad(barrierTex, gid_i + directions[5], 0).r != 0) {
-    divV += textureLoad(vel, gid_i + directions[5], 0).z;
+    let vel = textureLoad(vel, gid_i + directions[5], 0).xyz;
+    divV += vel.z;
+    curlV += vec3f(-vel.y, vel.x, 0);
   }
+
   
   // calculate and save divergence with dx = 1
   textureStore(div, gid, vec4f(divV * 0.5, 0, 0, 0));
+  // store curl with dx = 1
+  textureStore(curl, gid, vec4f(curlV * 0.5, 0));
 }
 `;
 
@@ -203,7 +235,9 @@ fn neighborSum(lid_i: vec3i, gid: vec3u, currentPressure: f32, indices: array<u3
   let pressureXn = select(currentPressure, tile[indices[1]].x, tile[indices[1]].y != 0);
   let pressureXp = select(currentPressure, select(tile[indices[2]].x, 0, gid.x == u32(uni.volSize.x) - 1), tile[indices[2]].y != 0);
   // let pressureXp = select(currentPressure, tile[indices[2]].x, tile[indices[2]].y != 0);
+  // let pressureYn = select(currentPressure, select(tile[indices[3]].x, 0, gid.y == 0), tile[indices[3]].y != 0);
   let pressureYn = select(currentPressure, tile[indices[3]].x, tile[indices[3]].y != 0);
+  // let pressureYp = select(currentPressure, select(tile[indices[4]].x, 0, gid.y == u32(uni.volSize.y) - 1), tile[indices[4]].y != 0);
   let pressureYp = select(currentPressure, tile[indices[4]].x, tile[indices[4]].y != 0);
   let pressureZn = select(currentPressure, tile[indices[5]].x, tile[indices[5]].y != 0);
   let pressureZp = select(currentPressure, tile[indices[6]].x, tile[indices[6]].y != 0);

@@ -29,7 +29,7 @@ const storage = {
   barrierTex: null,
 };
 
-let initialize = true, clearPressure = true;
+let initialize = true, clearPressureRefreshSmoke = true, refreshBarriers = true;
 
 let renderTextureIdx = 4, pingPong = true;
 
@@ -67,7 +67,7 @@ function resizeDomain(newSize) {
   vec3.clone(newSize, simulationDomain);
   vec3.clone(simulationDomain.map(v => v / Math.max(...simulationDomain)), simulationDomainNorm);
   simVoxelCount = simulationDomain[0] * simulationDomain[1] * simulationDomain[2];
-  barrierData = new Uint8Array(simVoxelCount).fill(1);
+  barrierData = new Uint8Array(simVoxelCount).fill(255);
   yMidpt = Math.floor(simulationDomain[1] / 2);
   zMidpt = Math.floor(simulationDomain[2] / 2);
   camera.target = defaults.target = vec3.scale(simulationDomainNorm, 0.5);
@@ -77,8 +77,8 @@ function resizeDomain(newSize) {
  * Refreshes the active preset
  */
 function refreshPreset(clear = false) {
-  if (clear) barrierData.fill(1);
-  clearPressure = true;
+  if (clear) barrierData.fill(255);
+  clearPressureRefreshSmoke = refreshBarriers = true;
   const presetType = gui.io.presetSelect.value;
   switch (presetType) {
     case "DoubleSlit":
@@ -96,12 +96,12 @@ function refreshPreset(clear = false) {
 
 function softReset() {
   initialize = true;
-  clearPressure = true;
+  clearPressureRefreshSmoke = true;
 }
 
 function hardReset() {
   initialize = true;
-  clearPressure = true;
+  clearPressureRefreshSmoke = true;
   cancelAnimationFrame(rafId);
   clearInterval(perfIntId);
   if (!vec3.equals(simulationDomain, newDomainSize)) resizeDomain(newDomainSize);
@@ -141,7 +141,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 // Sim controls
 {
   gui.addGroup("simCtrl", "Sim controls");
-  gui.addDropdown("visType", "Visualization", ["Smoke", "Velocity", "Velocity magnitude", "Pressure", "Divergence"], "simCtrl", null, (value) => {
+  gui.addDropdown("visType", "Visualization", ["Smoke", "Velocity", "Velocity magnitude", "Pressure", "Curl", "Divergence"], "simCtrl", null, (value) => {
     uni.values.vectorVis.set([0]);
     pingPong = false;
     switch (value) {
@@ -160,6 +160,9 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
       case "Pressure":
         renderTextureIdx = 3;
         break;
+      case "Curl":
+        renderTextureIdx = 6;
+        uni.values.vectorVis.set([1]);
       case "Divergence":
         renderTextureIdx = 2;
         break;
@@ -177,18 +180,22 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addNumericInput("smokePY", true, "Y pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "simCtrl", (value) => {
     smokePos[0] = Math.round(value * simulationDomain[1]);
     uni.values.smokePos.set(smokePos);
+    clearPressureRefreshSmoke = true;
   }, "Smoke source Y-coordinate normalized to simulation YZ plane, requires reinit");
   gui.addNumericInput("smokePZ", true, "Z pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "simCtrl", (value) => {
     smokePos[1] = Math.round(value * simulationDomain[2]);
     uni.values.smokePos.set(smokePos);
+    clearPressureRefreshSmoke = true;
   }, "Smoke source Z-coordinate normalized to simulation YZ plane, requires reinit");
   gui.addNumericInput("smokeSY", true, "Y size", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[0] * 2 / simulationDomain[1], float: 2 }, "simCtrl", (value) => {
     smokeHalfSize[0] = Math.ceil(value * simulationDomain[1] / 2);
     uni.values.smokeHalfSize.set(smokeHalfSize);
+    clearPressureRefreshSmoke = true;
   }, "Smoke source Y size normalized to simulation YZ plane, requires reinit");
   gui.addNumericInput("smokeSZ", true, "Z size", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[1] * 2 / simulationDomain[2], float: 2 }, "simCtrl", (value) => {
     smokeHalfSize[1] = Math.ceil(value * simulationDomain[2] / 2);
     uni.values.smokeHalfSize.set(smokeHalfSize);
+    clearPressureRefreshSmoke = true;
   }, "Smoke source Z size normalized to simulation YZ plane, requires reinit");
   gui.addButton("toggleSim", "Play / Pause", false, "simCtrl", () => {
     if (oldDt) {
@@ -207,26 +214,30 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 
 // Preset controls
 {
+  function autoUpdate(autoUpdate) {
+    if (autoUpdate) refreshPreset(true);
+  }
+  let doAutoUpdate = true;
   gui.addGroup("presets", "Presets");
 
-  gui.addNumericInput("radius", true, "Radius", { min: 0, max: 256, step: 1, val: sharedSettings.radius, float: 0 }, "presets", (value) => sharedSettings.radius = value);
+  gui.addNumericInput("radius", true, "Radius", { min: 0, max: 256, step: 1, val: sharedSettings.radius, float: 0 }, "presets", (value) => {sharedSettings.radius = value; autoUpdate(doAutoUpdate)});
 
-  gui.addNumericInput("rotation", true, "AoA/Rot", { min: -90, max: 90, step: 1, val: 10, float: 0 }, "presets", (value) => presetSettings.Prism.rot = presetSettings.FlatWing.AoA = value.toRad());
-  gui.addNumericInput("width", true, "Width", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "presets", (value) => presetSettings.Prism.width = presetSettings.FlatWing.width = value);
-  gui.addRadioOptions("shape", ["circular", "square", "linear"], "circular", "presets", {}, (value) => presetSettings.Aperture.shape = shapes[value]);
-  gui.addNumericInput("nSides", true, "n sides", { min: 3, max: 24, step: 1, val: 3, float: 0 }, "presets", (value) => presetSettings.Prism.n = value);
+  gui.addNumericInput("rotation", true, "AoA/Rot", { min: -90, max: 90, step: 1, val: 20, float: 0 }, "presets", (value) => {presetSettings.Prism.rot = presetSettings.FlatWing.AoA = value.toRad(); autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("width", true, "Width", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "presets", (value) => {presetSettings.Prism.width = presetSettings.FlatWing.width = value; autoUpdate(doAutoUpdate)});
+  gui.addRadioOptions("shape", ["circular", "square", "linear"], "circular", "presets", {}, (value) => {presetSettings.Aperture.shape = shapes[value]; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("nSides", true, "n sides", { min: 3, max: 24, step: 1, val: 3, float: 0 }, "presets", (value) => {presetSettings.Prism.n = value; autoUpdate(doAutoUpdate)});
 
-  gui.addNumericInput("chord", true, "Chord", { min: 8, max: 64, step: 1, val: 64, float: 0 }, "presets", (value) => presetSettings.FlatWing.chord = value);
-  gui.addNumericInput("thickness", true, "Thickness", { min: 2, max: 10, step: 1, val: 3, float: 0 }, "presets", (value) => presetSettings.FlatWing.thickness = value);
+  gui.addNumericInput("chord", true, "Chord", { min: 8, max: 64, step: 1, val: 64, float: 0 }, "presets", (value) => {presetSettings.FlatWing.chord = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("thickness", true, "Thickness", { min: 2, max: 10, step: 1, val: 3, float: 0 }, "presets", (value) => {presetSettings.FlatWing.thickness = value; autoUpdate(doAutoUpdate)});
 
-  gui.addNumericInput("slitWidth", true, "Slit width", { min: 3, max: 512, step: 1, val: 8, float: 0 }, "presets", (value) => presetSettings.DoubleSlit.slitWidth = value);
-  gui.addNumericInput("slitSpacing", true, "Slit spacing", { min: 0, max: 512, step: 1, val: 32, float: 0 }, "presets", (value) => presetSettings.DoubleSlit.slitSpacing = value);
-  gui.addNumericInput("slitHeight", true, "Slit height", { min: 0, max: 512, step: 1, val: 64, float: 0 }, "presets", (value) => presetSettings.DoubleSlit.slitHeight = value);
+  gui.addNumericInput("slitWidth", true, "Slit width", { min: 3, max: 512, step: 1, val: 8, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitWidth = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("slitSpacing", true, "Slit spacing", { min: 0, max: 512, step: 1, val: 32, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitSpacing = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("slitHeight", true, "Slit height", { min: 0, max: 512, step: 1, val: 64, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitHeight = value; autoUpdate(doAutoUpdate)});
 
   gui.addCheckbox("invert", "Invert barrier", false, "presets", (checked) => presetSettings.Aperture.invert = checked);
 
-  gui.addNumericInput("barrierThickness", true, "Thickness", { min: 1, max: 16, step: 1, val: 2, float: 0 }, "presets", (value) => barrierThickness = value);
-  gui.addNumericInput("xOffset", true, "X Offset", { min: 0, max: 512, step: 1, val: 16, float: 0 }, "presets", (value) => presetXOffset = value);
+  gui.addNumericInput("barrierThickness", true, "Thickness", { min: 1, max: 16, step: 1, val: 2, float: 0 }, "presets", (value) => {barrierThickness = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("xOffset", true, "X Offset", { min: 0, max: 512, step: 1, val: 16, float: 0 }, "presets", (value) => {presetXOffset = value; autoUpdate(doAutoUpdate)});
 
   gui.addDropdown("presetSelect", "Select preset", ["Prism", "FlatWing", "Aperture", "DoubleSlit"], "presets", {
     "Prism": ["radius", "rotation", "nSides", "width"],
@@ -234,6 +245,8 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     "Aperture": ["shape", "radius", "invert", "barrierThickness"],
     "DoubleSlit": ["slitWidth", "slitSpacing", "slitHeight", "barrierThickness"],
   });
+
+  gui.addCheckbox("doAutoUpdate", "Auto update", true, "presets", (checked) => doAutoUpdate = checked);
 
   gui.addButton("updatePreset", "Load preset", false, "presets", () => refreshPreset(false));
   gui.addButton("clearUpdatePreset", "Clear & load", false, "presets", () => refreshPreset(true));
@@ -243,7 +256,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 // Visualization controls
 {
   gui.addGroup("visCtrl", "Visualization controls");
-  gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0.1, max: 5, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => uni.values.globalAlpha.set([value]), "Global alpha multiplier");
+  gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.globalAlpha.set([value]), "Global alpha multiplier");
   gui.addNumericInput("rayDtMult", true, "Ray dt mult", { min: 0.1, max: 5, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => uni.values.rayDtMult.set([value]), "Raymarching step multipler; higher has better visual quality, lower has better performance");
   gui.addCheckbox("energy", "Visualize energy", true, "visCtrl", (checked) => {
     energyFilterStrength = checked ? defaultEnergyFilterStrength : 0;

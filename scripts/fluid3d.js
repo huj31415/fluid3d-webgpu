@@ -158,12 +158,15 @@ shader-f16: ${shaderf16}
     label: "init compute bind group"
   });
 
-  const clearPressureComputePipeline = newComputePipeline(clearPressureShaderCode, "clear pressure");
+  const clearPressureRefreshSmokeComputePipeline = newComputePipeline(clearPressureRefreshSmokeShaderCode, "clear pressure");
 
-  const clearPressureComputeBindGroup = device.createBindGroup({
-    layout: clearPressureComputePipeline.getBindGroupLayout(0),
+  const clearPressureRefreshSmokeComputeBindGroup = device.createBindGroup({
+    layout: clearPressureRefreshSmokeComputePipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: storage.pressureTex.createView() },
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: storage.pressureTex.createView() },
+      { binding: 2, resource: storage.smokeTemp0.createView() },
+      { binding: 3, resource: storage.smokeTemp1.createView() },
     ],
     label: "clear pressure compute bind group"
   });
@@ -207,7 +210,8 @@ shader-f16: ${shaderf16}
       { binding: 0, resource: { buffer: uniformBuffer } },
       { binding: 1, resource: velTex.createView() },
       { binding: 2, resource: storage.divTex.createView() },
-      { binding: 3, resource: storage.barrierTex.createView() },
+      { binding: 3, resource: storage.curlTex.createView() },
+      { binding: 4, resource: storage.barrierTex.createView() },
     ],
     label: "velocity divergence compute bind group"
   });
@@ -292,6 +296,7 @@ shader-f16: ${shaderf16}
     renderBindGroup(storage.pressureTex),
     renderBindGroup(storage.smokeTemp0),
     renderBindGroup(storage.smokeTemp1),
+    renderBindGroup(storage.curlTex),
   ];
 
   const renderPassDescriptor = {
@@ -348,24 +353,18 @@ shader-f16: ${shaderf16}
       initComputePass.end();
     }
 
-    if (clearPressure) {
-      clearPressure = false;
-      const clearPressureComputePass = encoder.beginComputePass();
-      clearPressureComputePass.setPipeline(clearPressureComputePipeline);
-      clearPressureComputePass.setBindGroup(0, clearPressureComputeBindGroup);
-      clearPressureComputePass.dispatchWorkgroups(...wgDispatchSize);
-      clearPressureComputePass.end();
+    if (clearPressureRefreshSmoke) {
+      clearPressureRefreshSmoke = false;
+      const clearPressureRefreshSmokeComputePass = encoder.beginComputePass();
+      clearPressureRefreshSmokeComputePass.setPipeline(clearPressureRefreshSmokeComputePipeline);
+      clearPressureRefreshSmokeComputePass.setBindGroup(0, clearPressureRefreshSmokeComputeBindGroup);
+      clearPressureRefreshSmokeComputePass.dispatchWorkgroups(...wgDispatchSize);
+      clearPressureRefreshSmokeComputePass.end();
     }
 
     const run = dt > 0;
 
     if (run) {
-      const advectionComputePass = advectionComputeTimingHelper.beginComputePass(encoder);
-      advectionComputePass.setPipeline(advectComputePipeline);
-      advectionComputePass.setBindGroup(0, advectComputeBindGroups[pingPongIndex]);
-      advectionComputePass.dispatchWorkgroups(...wgDispatchSize);
-      advectionComputePass.end();
-
       const velDivComputePass = velDivComputeTimingHelper.beginComputePass(encoder);
       velDivComputePass.setPipeline(velDivComputePipeline);
       velDivComputePass.setBindGroup(0, velDivComputeBindGroups[0]);
@@ -387,6 +386,12 @@ shader-f16: ${shaderf16}
       projectionComputePass.dispatchWorkgroups(...wgDispatchSize);
       projectionComputePass.end();
 
+      const advectionComputePass = advectionComputeTimingHelper.beginComputePass(encoder);
+      advectionComputePass.setPipeline(advectComputePipeline);
+      advectionComputePass.setBindGroup(0, advectComputeBindGroups[pingPongIndex]);
+      advectionComputePass.dispatchWorkgroups(...wgDispatchSize);
+      advectionComputePass.end();
+
       // const velDivComputePass2 = encoder.beginComputePass();
       // velDivComputePass2.setPipeline(velDivComputePipeline);
       // velDivComputePass2.setBindGroup(0, velDivComputeBindGroups[pingPongIndex]);
@@ -398,7 +403,7 @@ shader-f16: ${shaderf16}
 
     const renderPass = renderTimingHelper.beginRenderPass(encoder, renderPassDescriptor);
     renderPass.setPipeline(renderPipeline);
-    renderPass.setBindGroup(0, renderBindGroups[renderTextureIdx + (pingPong ? pingPongIndex : 0)]); // 0 = velocity, 2 = divergence, 3 = pressure, 4-5 = smoke
+    renderPass.setBindGroup(0, renderBindGroups[renderTextureIdx + (pingPong ? pingPongIndex : 0)]); // 0 = velocity, 2 = divergence, 3 = pressure, 4-5 = smoke, 6 = curl
     // renderPass.setBindGroup(0, renderBindGroups[pingPongIndex + 4]);
     renderPass.draw(3, 1, 0, 0);
     renderPass.end();
@@ -439,11 +444,10 @@ shader-f16: ${shaderf16}
   uni.values.volSizeNorm.set(simulationDomainNorm);
   uni.values.rayDtMult.set([2]);
   uni.values.resolution.set([canvas.width, canvas.height]);
-  uni.values.vInflow.set([3]);
   uni.values.pressureLocalIter.set([4]); // 2-8 typical, 2-4 best according to chatgpt
-  uni.values.SORomega.set([1]);
+  uni.values.SORomega.set([1.6]);
   // uni.values.vectorVis.set([0]);
-  uni.values.globalAlpha.set([2]);
+  uni.values.globalAlpha.set([1]);
   uni.values.smokePos.set(smokePos);
   uni.values.smokeHalfSize.set(smokeHalfSize);
 
@@ -451,5 +455,6 @@ shader-f16: ${shaderf16}
 }
 
 const camera = new Camera(defaults);
+uni.values.vInflow.set([3]);
 
 main().then(() => refreshPreset(false));

@@ -11,7 +11,7 @@ const presetSettings = {
   DoubleSlit: { slitWidth: 8, slitSpacing: 32, slitHeight: 64 },
   Aperture: { shape: shapes.circular, invert: false },
   Prism: { n: 3, rot: (10).toRad(), width: 0.5 },
-  FlatWing: { chord: 64, thickness: 3, AoA: (10).toRad(), width: 0.5 },
+  FlatWing: { chord: 64, thickness: 3, AoA: (20).toRad(), width: 0.5 },
 }
 
 /**
@@ -39,11 +39,11 @@ function updateQuadSymmetry(x, yRel, zRel, newValue) {
  * @param {Boolean} reset Whether to clear all barriers 
  */
 function updateBarrierTexture(reset = false) {
-  clearPressure = true;
+  clearPressureRefreshSmoke = true;
   cleared = reset;
   device.queue.writeTexture(
     { texture: storage.barrierTex },
-    reset ? barrierData.fill(1) : barrierData,
+    reset ? barrierData.fill(255) : barrierData,
     { offset: 0, bytesPerRow: simulationDomain[0] * 1, rowsPerImage: simulationDomain[1] },
     { width: simulationDomain[0], height: simulationDomain[1], depthOrArrayLayers: simulationDomain[2] },
   );
@@ -57,7 +57,7 @@ const flatPresets = Object.freeze({
     y > args.slitHeight / 2 // fill outside of slit area
       || (y <= args.slitHeight / 2 // fill if inside slit height and outside slit opening
         && (z < (args.slitSpacing - args.slitWidth) / 2 || z > (args.slitSpacing + args.slitWidth) / 2)
-      ) ? 0 : 1
+      ) ? 0 : 255
   ),
   // cutout grid / 2d version of double slit
   Aperture: (y, z, args = presetSettings.Aperture) => (args.shape(y, z) >= sharedSettings.radius * sharedSettings.radius) ? args.invert ? 1 : 0 : args.invert ? 0 : 1,
@@ -100,16 +100,16 @@ function nGonPrism(distance = presetXOffset, args = presetSettings.Prism) {
 
 function flatWing(distance = presetXOffset, args = presetSettings.FlatWing) {
   const AoA = args.AoA;//.toRad();
-  const height = Math.ceil(args.chord * Math.sin(AoA)) + args.thickness;
-  const length = Math.ceil(args.chord * Math.cos(AoA)) + args.thickness;
-  const halfHeight = Math.ceil(height / 2);
-  const halfLength = Math.ceil(length / 2);
+  const height = (Math.ceil(args.chord * Math.sin(AoA) + args.thickness * Math.cos(AoA)));
+  const length = (Math.ceil(args.chord * Math.cos(AoA) + args.thickness * Math.sin(AoA)));
+  const halfHeight = Math.abs(Math.ceil(height / 2));
+  const halfLength = Math.abs(Math.ceil(length / 2));
 
   for (let z = 0; z < simulationDomain[2] * args.width; z++) {
     for (let y = -halfHeight; y < halfHeight; y++) {
       for (let x = -halfLength; x < halfLength; x++) {
         if (Math.abs(y - x * (-height / length)) <= args.thickness) {
-          barrierData[index3d(x + distance + halfLength, y + yMidpt, z)] = 0;
+          barrierData[index3d(x + distance + Math.ceil(args.chord / 2), y + yMidpt, z)] = 0;
         }
       }
     }
