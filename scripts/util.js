@@ -14,18 +14,23 @@ uni.addUniform("resolution", "vec2f");    // canvas resolution: x-width, y-heigh
 uni.addUniform("pressureLocalIter", "f32"); // number of rbgs subiterations using local memory 
 uni.addUniform("vectorVis", "f32");       // Whether to render vector or scalar field
 
-uni.addUniform("smokePos", "vec2f");       // Smoke source center position
-uni.addUniform("smokeHalfSize", "vec2f");  // Smoke source size in Y and Z
-
+uni.addUniform("smokeHalfSize", "vec3f"); // Smoke source size in Y and Z
 uni.addUniform("SORomega", "f32");        // successive overrelaxation omega
+
+uni.addUniform("smokePos", "vec2f");      // Smoke source center position
 uni.addUniform("globalAlpha", "f32");     // global alpha multiplier
+uni.addUniform("smokeTemp", "f32");       // smoke temperature
 
 uni.finalize();
 
 const storage = {
   velTex0: null,
   velTex1: null,
-  energyTex: null,
+  divTex: null,
+  pressureTex: null,
+  smokeTemp0: null,
+  smokeTemp1: null,
+  curlTex: null,
   barrierTex: null,
 };
 
@@ -36,7 +41,7 @@ let renderTextureIdx = 4, pingPong = true;
 let dt = 1;
 let oldDt;
 
-let dtPerFrame = 1;
+let pressureGlobalIter = 4;
 
 const sharedSettings = {
   radius: 24,
@@ -57,7 +62,7 @@ let barrierData = new Uint8Array(simulationDomain[0] * simulationDomain[1] * sim
 let cleared = false;
 
 const smokePos = [yMidpt, zMidpt];
-const smokeHalfSize = [16, 8];
+const smokeHalfSize = [16, 8, 1];
 
 /**
  * Resizes the simulation domain
@@ -141,62 +146,52 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 // Sim controls
 {
   gui.addGroup("simCtrl", "Sim controls");
-  gui.addDropdown("visType", "Visualization", ["Smoke", "Velocity", "Velocity magnitude", "Pressure", "Curl", "Divergence"], "simCtrl", null, (value) => {
+  gui.addDropdown("visType", "Visualization", ["Smoke", "Velocity", "Velocity magnitude", "Pressure", "Temperature", "Curl", "Divergence"], "simCtrl", null, (value) => {
     uni.values.vectorVis.set([0]);
     pingPong = false;
     switch (value) {
       case "Smoke":
         renderTextureIdx = 4;
         pingPong = true;
+        uni.values.vectorVis.set([0]);
         break;
       case "Velocity":
-        uni.values.vectorVis.set([1]);
         renderTextureIdx = 0;
+        uni.values.vectorVis.set([4]);
         break;
       case "Velocity magnitude":
-        uni.values.vectorVis.set([2]);
         renderTextureIdx = 0;
+        uni.values.vectorVis.set([3]);
         break;
       case "Pressure":
         renderTextureIdx = 3;
+        uni.values.vectorVis.set([1]);
+        break;
+      case "Temperature":
+        renderTextureIdx = 4;
+        pingPong = true;
+        uni.values.vectorVis.set([2]);
         break;
       case "Curl":
         renderTextureIdx = 6;
         uni.values.vectorVis.set([1]);
       case "Divergence":
         renderTextureIdx = 2;
+        uni.values.vectorVis.set([1]);
         break;
     }
   });
-  gui.addNumericInput("dt", true, "dt", { min: 0, max: 2, step: 0.01, val: dt, float: 2 }, "simCtrl", (newDt) => {
+  gui.addNumericInput("dt", true, "dt", { min: 0.5, max: 2, step: 0.01, val: dt, float: 2 }, "simCtrl", (newDt) => {
     if (oldDt) oldDt = newDt;
     else dt = newDt;
     uni.values.dt.set([dt]);
   }, "Simulation delta-time");
-  gui.addNumericInput("inflowV", true, "Flow velocity", { min: 0, max: 5, step: 0.01, val: 3, float: 2 }, "simCtrl", (value) => uni.values.vInflow.set([value]));
+  gui.addNumericInput("inflowV", true, "Flow velocity", { min: 0, max: 5, step: 0.01, val: 2, float: 2 }, "simCtrl", (value) => uni.values.vInflow.set([value]));
   gui.addNumericInput("xSize", false, "X size (reinit)", { min: 8, max: 1024, step: 8, val: simulationDomain[0], float: 0 }, "simCtrl", (value) => newDomainSize[0] = value, "Requires reinitialization to apply");
   gui.addNumericInput("ySize", false, "Y size (reinit)", { min: 8, max: 512, step: 8, val: simulationDomain[1], float: 0 }, "simCtrl", (value) => newDomainSize[1] = value, "Requires reinitialization to apply");
   gui.addNumericInput("zSize", false, "Z size (reinit)", { min: 8, max: 512, step: 8, val: simulationDomain[2], float: 0 }, "simCtrl", (value) => newDomainSize[2] = value, "Requires reinitialization to apply");
-  gui.addNumericInput("smokePY", true, "Y pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "simCtrl", (value) => {
-    smokePos[0] = Math.round(value * simulationDomain[1]);
-    uni.values.smokePos.set(smokePos);
-    clearPressureRefreshSmoke = true;
-  }, "Smoke source Y-coordinate normalized to simulation YZ plane, requires reinit");
-  gui.addNumericInput("smokePZ", true, "Z pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "simCtrl", (value) => {
-    smokePos[1] = Math.round(value * simulationDomain[2]);
-    uni.values.smokePos.set(smokePos);
-    clearPressureRefreshSmoke = true;
-  }, "Smoke source Z-coordinate normalized to simulation YZ plane, requires reinit");
-  gui.addNumericInput("smokeSY", true, "Y size", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[0] * 2 / simulationDomain[1], float: 2 }, "simCtrl", (value) => {
-    smokeHalfSize[0] = Math.ceil(value * simulationDomain[1] / 2);
-    uni.values.smokeHalfSize.set(smokeHalfSize);
-    clearPressureRefreshSmoke = true;
-  }, "Smoke source Y size normalized to simulation YZ plane, requires reinit");
-  gui.addNumericInput("smokeSZ", true, "Z size", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[1] * 2 / simulationDomain[2], float: 2 }, "simCtrl", (value) => {
-    smokeHalfSize[1] = Math.ceil(value * simulationDomain[2] / 2);
-    uni.values.smokeHalfSize.set(smokeHalfSize);
-    clearPressureRefreshSmoke = true;
-  }, "Smoke source Z size normalized to simulation YZ plane, requires reinit");
+  gui.addNumericInput("pressureGlobalIter", true, "Press. global iter", { min: 2, max: 16, step: 1, val: pressureGlobalIter, float: 0 }, "simCtrl", (value) => pressureGlobalIter = value, "Global pressure solver iterations per frame");
+  gui.addNumericInput("pressureLocalIter", true, "Press. local iter", { min: 1, max: 16, step: 1, val: 4, float: 0 }, "simCtrl", (value) => uni.values.pressureLocalIter.set([value]), "Local pressure solver iterations per global iter.");
   gui.addButton("toggleSim", "Play / Pause", false, "simCtrl", () => {
     if (oldDt) {
       dt = oldDt;
@@ -212,6 +207,39 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addButton("hardRestart", "Reinitialize", true, "simCtrl", hardReset);
 }
 
+{
+  gui.addGroup("smokeCtrl", "Smoke settings");
+    gui.addNumericInput("smokePZ", true, "Z pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
+    smokePos[0] = Math.round(value * simulationDomain[1]);
+    uni.values.smokePos.set(smokePos);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source Y-coordinate normalized to simulation YZ plane");
+  gui.addNumericInput("smokePY", true, "Y pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
+    smokePos[1] = Math.round(value * simulationDomain[2]);
+    uni.values.smokePos.set(smokePos);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source Z-coordinate normalized to simulation YZ plane");
+  gui.addNumericInput("smokeSY", true, "Y size", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[0] * 2 / simulationDomain[1], float: 2 }, "smokeCtrl", (value) => {
+    smokeHalfSize[0] = Math.ceil(value * simulationDomain[1] / 2);
+    uni.values.smokeHalfSize.set(smokeHalfSize);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source Y size normalized to simulation YZ plane");
+  gui.addNumericInput("smokeSZ", true, "Z spacing", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[1] * 2 / simulationDomain[2], float: 2 }, "smokeCtrl", (value) => {
+    smokeHalfSize[1] = Math.ceil(value * simulationDomain[2] / 2);
+    uni.values.smokeHalfSize.set(smokeHalfSize);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source Z spacing normalized to simulation YZ plane");
+  gui.addNumericInput("smokeSZ", true, "Z size", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
+    smokeHalfSize[2] = 2 * value;
+    uni.values.smokeHalfSize.set(smokeHalfSize);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source Z size normalized to Z spacing");
+  gui.addNumericInput("smokeTemp", true, "Temperature", { min: 0, max: 2, step: 0.01, val: 1, float: 2 }, "smokeCtrl", (value) => {
+    uni.values.smokeTemp.set([value]);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source temperature (1=ambient)");
+}
+
 // Preset controls
 {
   function autoUpdate(autoUpdate) {
@@ -220,7 +248,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   let doAutoUpdate = true;
   gui.addGroup("presets", "Presets");
 
-  gui.addNumericInput("radius", true, "Radius", { min: 0, max: 256, step: 1, val: sharedSettings.radius, float: 0 }, "presets", (value) => {sharedSettings.radius = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("radius", true, "Radius", { min: 0, max: 128, step: 1, val: sharedSettings.radius, float: 0 }, "presets", (value) => {sharedSettings.radius = value; autoUpdate(doAutoUpdate)});
 
   gui.addNumericInput("rotation", true, "AoA/Rot", { min: -90, max: 90, step: 1, val: 20, float: 0 }, "presets", (value) => {presetSettings.Prism.rot = presetSettings.FlatWing.AoA = value.toRad(); autoUpdate(doAutoUpdate)});
   gui.addNumericInput("width", true, "Width", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "presets", (value) => {presetSettings.Prism.width = presetSettings.FlatWing.width = value; autoUpdate(doAutoUpdate)});
@@ -236,8 +264,8 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 
   gui.addCheckbox("invert", "Invert barrier", false, "presets", (checked) => presetSettings.Aperture.invert = checked);
 
-  gui.addNumericInput("barrierThickness", true, "Thickness", { min: 1, max: 16, step: 1, val: 2, float: 0 }, "presets", (value) => {barrierThickness = value; autoUpdate(doAutoUpdate)});
-  gui.addNumericInput("xOffset", true, "X Offset", { min: 0, max: 512, step: 1, val: 16, float: 0 }, "presets", (value) => {presetXOffset = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("barrierThickness", true, "Thickness", { min: 1, max: 16, step: 1, val: 16, float: 0 }, "presets", (value) => {barrierThickness = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("xOffset", true, "X Offset", { min: 0, max: 1, step: .01, val: 0.2, float: 2 }, "presets", (value) => {presetXOffset = Math.round(value * simulationDomain[0]); autoUpdate(doAutoUpdate)});
 
   gui.addDropdown("presetSelect", "Select preset", ["Prism", "FlatWing", "Aperture", "DoubleSlit"], "presets", {
     "Prism": ["radius", "rotation", "nSides", "width"],
@@ -258,18 +286,6 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addGroup("visCtrl", "Visualization controls");
   gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.globalAlpha.set([value]), "Global alpha multiplier");
   gui.addNumericInput("rayDtMult", true, "Ray dt mult", { min: 0.1, max: 5, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => uni.values.rayDtMult.set([value]), "Raymarching step multipler; higher has better visual quality, lower has better performance");
-  gui.addCheckbox("energy", "Visualize energy", true, "visCtrl", (checked) => {
-    energyFilterStrength = checked ? defaultEnergyFilterStrength : 0;
-    uni.values.energyFilter.set([energyFilterStrength]);
-  });
-  gui.addNumericInput("plusXAlpha", true, "+X energy a", { min: 1, max: 5, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => uni.values.plusXAlpha.set([value]), "+X energy projection alpha multiplier");
-  gui.addNumericInput("energyMult", true, "Energy mult", { min: 0.01, max: 5, step: 0.01, val: 1, float: 2 }, "visCtrl", (value) => uni.values.energyMult.set([value]), "Raw energy value multiplier before transfer function");
-  gui.addNumericInput("energyFilter", true, "Energy filter", { min: 0, max: 3, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => {
-    value = Math.pow(10, value);
-    defaultEnergyFilterStrength = value;
-    energyFilterStrength = gui.io.energy.checked ? defaultEnergyFilterStrength : 0;
-    uni.values.energyFilter.set([value]);
-  }, "Energy low pass filter strength");
 }
 
 // Camera keybinds

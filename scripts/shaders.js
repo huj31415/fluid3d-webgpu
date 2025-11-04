@@ -1,7 +1,7 @@
 // preprocess barriers and pack into cells?
 const initShaderCode = /* wgsl */`
 ${uni.uniformStruct}
-@group(0) @binding(0) var<uniform> uni: Uniforms;
+// @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var velOld:  texture_storage_3d<rgba32float, write>;
 @group(0) @binding(2) var velNew:  texture_storage_3d<rgba32float, write>;
 @group(0) @binding(3) var smokeOld:  texture_storage_3d<rg32float, write>;
@@ -22,12 +22,8 @@ fn main(
   textureStore(velNew, gid, vec4f(0));
 
   let gid_f = vec3f(gid);
-  var smoke = vec4f(0,1,0,0);
+  let smoke = vec4f(0,1,0,0);
 
-  // if (gid.x == 0 && all(abs(gid_f.yz - uni.smokePos.xy) <= uni.smokeHalfSize)) {
-  if (gid.x == 0 && abs(gid_f.z - uni.smokePos.x) <= uni.smokeHalfSize.x && gid_f.y % (2 * uni.smokeHalfSize.y) < uni.smokeHalfSize.y) {
-    smoke.x = 1;
-  }
   textureStore(smokeOld, gid, smoke);
   textureStore(smokeNew, gid, smoke);
 }
@@ -51,11 +47,14 @@ fn main(
   textureStore(pressure, gid, vec4f(0));
 
   let gid_f = vec3f(gid);
-  var smoke = vec4f(0,1,0,0);
 
   // if (gid.x == 0 && all(abs(gid_f.yz - uni.smokePos.xy) <= uni.smokeHalfSize)) {
-  if (gid.x == 0) {
-    smoke.x = select(0.0, 1.0, abs(gid_f.z - uni.smokePos.x) <= uni.smokeHalfSize.x && gid_f.y % (2 * uni.smokeHalfSize.y) < uni.smokeHalfSize.y);
+  if (gid.x == 0 && gid.y > 0 && gid.y < u32(uni.volSize.y) - 1) {
+    let smoke = vec4f(
+      f32(abs(gid_f.z - uni.smokePos.x) <= uni.smokeHalfSize.x && (gid_f.y + uni.smokePos.y) % (2 * uni.smokeHalfSize.y) < uni.smokeHalfSize.z * uni.smokeHalfSize.y),
+      uni.smokeTemp,0,0
+    );
+    // smoke.x = f32();
     textureStore(smokeOld, gid, smoke);
     textureStore(smokeNew, gid, smoke);
   }
@@ -74,7 +73,6 @@ ${uni.uniformStruct}
 @group(0) @binding(4) var linSampler: sampler;
 @group(0) @binding(5) var smokeOld:  texture_3d<f32>;
 @group(0) @binding(6) var smokeNew:  texture_storage_3d<rg32float, write>;
-@group(0) @binding(7) var pressure:  texture_3d<f32>;
 
 override WG_X: u32;
 override WG_Y: u32;
@@ -91,26 +89,38 @@ fn main(
 
   // don't advect into barriers
   if (textureLoad(barrier, gid, 0).r == 0) {
-    textureStore(smokeNew, gid, vec4f(0,1,0,0));
+    textureStore(smokeNew, gid, vec4f(0,1,0,0)); // can modify to apply temperature to objects
     return;
   }
 
   var newVel = vec4f(uni.vInflow, 0, 0, 0);
-  let pastPos = saturate((gid_f - uni.dt * textureLoad(velOld, gid, 0).xyz + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
-  let newSmoke = textureSampleLevel(smokeOld, linSampler, pastPos, 0);
+  let pastPos = gid_f - uni.dt * textureLoad(velOld, gid, 0).xyz;
+  let pastPosNorm = saturate((pastPos + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
+  var newSmoke = textureSampleLevel(smokeOld, linSampler, pastPosNorm, 0);
 
   if (gid.x > 0 && gid.x < u32(uni.volSize.x) - 1) {
     // reverse trace particle velocity
-    newVel = textureSampleLevel(velOld, linSampler, pastPos, 0);
+    newVel = textureSampleLevel(velOld, linSampler, pastPosNorm, 0);
   }
-  // if (gid.x == 0 && abs(gid_f.z - uni.smokePos.x) <= uni.smokeHalfSize.x && gid_f.y % (2 * uni.smokeHalfSize.y) < uni.smokeHalfSize.y) {
-  //   newSmoke.x = 1;
-  // }
-    
+
+  // let pastPos_i = vec3i(clamp(round(pastPos), vec3f(1), vec3f(uni.volSize) - vec3f(2)));
+
   let temp = newSmoke.y;
-  let pressure = textureLoad(pressure, gid, 0).r;
-  // newVel += vec4f(0, pressure * (1 - 1 / temp), 0, 0); // rho1 = mP/(1 + (t1 - t0)), F=(rho_surrounding - rho)*g*V
-  
+  let ambientTemp = 1.0;
+  //(
+  //     select(textureLoad(smokeOld, pastPos_i + vec3i( 1,0,0), 0).y, 1, pastPos_i.x == i32(uni.volSize.x) - 1)
+  //   + select(textureLoad(smokeOld, pastPos_i + vec3i(-1,0,0), 0).y, 1, pastPos_i.x == 0)
+  //   + select(textureLoad(smokeOld, pastPos_i + vec3i(0, 1,0), 0).y, 1, pastPos_i.y == i32(uni.volSize.y) - 1)
+  //   + select(textureLoad(smokeOld, pastPos_i + vec3i(0,-1,0), 0).y, 1, pastPos_i.y == 0)
+  //   + select(textureLoad(smokeOld, pastPos_i + vec3i(0,0, 1), 0).y, 1, pastPos_i.z == i32(uni.volSize.z) - 1)
+  //   + select(textureLoad(smokeOld, pastPos_i + vec3i(0,0,-1), 0).y, 1, pastPos_i.z == 0)
+  // ) / 6.0;
+
+  newVel += vec4f(0, (temp - ambientTemp), 0, 0); // rho1 = mP/(1 + (t1 - t0)), F=(rho_surrounding - rho)*g*V
+  if (gid.x > 0) {
+    newSmoke.y = newSmoke.y - (temp - ambientTemp) * 0.001 * uni.dt; // equalize smoke temp with surroundings
+  }
+
   // interpolate and advect velocity
   textureStore(velNew, gid, newVel);
   textureStore(smokeNew, gid, newSmoke);
@@ -503,24 +513,28 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
     }
 
     var sampleColor = vec4f(0);
-    if (uni.vectorVis > 0.0) {
+    if (uni.vectorVis <= 2.0) { // 0: scalar-abs-bw, 1: scalar-color
+      let sampleValue = select(textureSampleLevel(stateTexture, stateSampler, samplePos, 0).x, textureSampleLevel(stateTexture, stateSampler, samplePos, 0).y - 1, uni.vectorVis == 2);//y-uni.smokeTemp; // scalar, also add option for y-1 for smoke temperature
+      // Skip if empty and not a boundary
+      if (sampleValue == 0.0 && barrier == 1.0) {
+        continue;
+      }
+      let a = clamp(abs(sampleValue) * 0.01, 0, 0.01) * uni.globalAlpha;
+      if (uni.vectorVis == 0.0) {
+        sampleColor = 10 * saturate(abs(vec4f(sampleValue, sampleValue, sampleValue, a)));
+      } else {
+        sampleColor = 10 * saturate(vec4f(sampleValue, (sampleValue - 1) * 0.5, -sampleValue, a));
+      }
+    } else { // 3: vel-xyz-color, 4: vel-mag-color, 5: curl-xyz-color
       // Sample state
-      let sampleValue = textureSampleLevel(stateTexture, stateSampler, samplePos, 0).xyz - vec3f(uni.vInflow / 2, 0, 0); // free velocity half of vInflow?
+      let sampleValue = textureSampleLevel(stateTexture, stateSampler, samplePos, 0).xyz - select(vec3f(0), vec3f(uni.vInflow / 2, 0, 0), uni.vectorVis < 5.0); // free velocity half of vInflow?
       // Skip if empty and not a boundary
       if (all(vec3f(sampleValue) == vec3f(0.0)) && barrier == 1.0) {
         continue;
       }
       // transfer function
-      let c = select(abs(sampleValue), vec3f(length(sampleValue)), uni.vectorVis == 2.0);
+      let c = select(abs(sampleValue), vec3f(length(sampleValue)), uni.vectorVis == 3.0);
       sampleColor = 10 * saturate(vec4f(c, clamp(length(sampleValue) * 0.01, 0, 0.01) * uni.globalAlpha));
-    } else {
-      let sampleValue = textureSampleLevel(stateTexture, stateSampler, samplePos, 0).x; // scalar
-      // Skip if empty and not a boundary
-      if (sampleValue == 0.0 && barrier == 1.0) {
-        continue;
-      }
-      sampleColor = 10 * saturate(vec4f(sampleValue, sampleValue, sampleValue, clamp(sampleValue * 0.01, 0, 0.01) * uni.globalAlpha));
-      // sampleColor = 10 * saturate(vec4f(sampleValue, (sampleValue - 1) * 0.5, -sampleValue, clamp(sampleValue * 0.01, 0, 0.01) * uni.globalAlpha));
     }
 
     // Exponential blending

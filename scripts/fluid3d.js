@@ -148,7 +148,7 @@ shader-f16: ${shaderf16}
   const initComputeBindGroup = device.createBindGroup({
     layout: initComputePipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: uniformBuffer } },
+      // { binding: 0, resource: { buffer: uniformBuffer } },
       { binding: 1, resource: storage.velTex0.createView() },
       { binding: 2, resource: storage.velTex1.createView() },
       { binding: 3, resource: storage.smokeTemp0.createView() },
@@ -191,7 +191,7 @@ shader-f16: ${shaderf16}
       { binding: 4, resource: linSampler },
       { binding: 5, resource: smokeTexOld.createView() },
       { binding: 6, resource: smokeTexNew.createView() },
-      { binding: 7, resource: storage.pressureTex.createView() },
+      // { binding: 7, resource: storage.pressureTex.createView() },
     ],
     label: "advection compute bind group"
   });
@@ -325,7 +325,6 @@ shader-f16: ${shaderf16}
   ]
 
   let pingPongIndex = 0;
-  const pressureGlobalIter = 4;
 
   function render() {
     const startTime = performance.now();
@@ -455,6 +454,7 @@ shader-f16: ${shaderf16}
 }
 
 const camera = new Camera(defaults);
-uni.values.vInflow.set([3]);
+uni.values.vInflow.set([2]);
+uni.values.smokeTemp.set([1]);
 
 main().then(() => refreshPreset(false));

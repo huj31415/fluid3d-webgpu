@@ -1,5 +1,5 @@
 let presetXOffset = 32;
-let barrierThickness = 3;
+let barrierThickness = 16;
 
 const shapes = Object.freeze({
   circular: (y, z) => y * y + z * z,
