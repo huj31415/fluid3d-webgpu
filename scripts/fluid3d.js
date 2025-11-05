@@ -15,6 +15,8 @@ async function main() {
   const maxBufferSize = adapter.limits.maxBufferSize;
   const f32filterable = adapter.features.has("float32-filterable");
   const shaderf16 = adapter.features.has("shader-f16");
+  const textureTier1 = adapter.features.has("texture-formats-tier1");
+  if (!textureTier1) alert("texture-formats-tier1 feature required");
 
   // compute workgroup size 16*8*8 | 32*8*4 | 64*4*4 = 1024 threads if maxComputeInvocationsPerWorkgroup >= 1024, otherwise 16*4*4 = 256 threads
   const largeWg = maxComputeInvocationsPerWorkgroup >= 1024;
@@ -27,6 +29,7 @@ workgroup: [${wg_x}, ${wg_y}, ${wg_z}]</span>
 maxBufferSize: ${maxBufferSize}
 f32filterable: ${f32filterable}
 shader-f16: ${shaderf16}
+texture-formats-tier1: ${textureTier1}
 </pre>
     `);
     gpuInfo = true;
@@ -36,6 +39,7 @@ shader-f16: ${shaderf16}
     requiredFeatures: [
       ...(adapter.features.has("timestamp-query") ? ["timestamp-query"] : []),
       ...(f32filterable ? ["float32-filterable"] : []),
+      ...(textureTier1 ? ["texture-formats-tier1"] : []),
       // ...(shaderf16 ? ["shader-f16"] : []),
     ],
     requiredLimits: {
@@ -91,6 +95,13 @@ shader-f16: ${shaderf16}
   storage.smokeTemp1 = newTexture("smokeTemp1", "rg32float");
   storage.curlTex = newTexture("curl");
   storage.barrierTex = newTexture("barrier", "r8unorm", false);
+  // store bitmask for barriers in 6 directions
+  storage.barrierMask = newTexture("barrierMask", "r8uint", true);
+  // device.createBuffer({
+  //   size: simVoxelCount, // 1 byte per voxel
+  //   usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  //   label: "barrier mask buffer",
+  // });
 
   // const velData = new Float32Array(simVoxelCount * 4).fill(0);
   // for (let z = 0; z < simulationDomain[2]; z++) {
@@ -314,7 +325,10 @@ shader-f16: ${shaderf16}
   const advectionComputeTimingHelper = new TimingHelper(device);
   const velDivComputeTimingHelper = new TimingHelper(device);
   // const pressureComputeTimingHelper = new TimingHelper(device);
-  // const pressureComputeTimingHelpers = new Array(8).fill(new TimingHelper(device)); // pressure helpers
+  const pressureComputeTimingHelpers = new Array(pressureGlobalIter);//.fill(new TimingHelper(device)); // pressure helpers
+  for (let i = 0; i < pressureGlobalIter; i++) {
+    pressureComputeTimingHelpers[i] = new TimingHelper(device);
+  }
   const projectionComputeTimingHelper = new TimingHelper(device);
   const renderTimingHelper = new TimingHelper(device);
 
@@ -325,6 +339,7 @@ shader-f16: ${shaderf16}
   ]
 
   let pingPongIndex = 0;
+  let pressureTime = 0;
 
   function render() {
     const startTime = performance.now();
@@ -371,8 +386,8 @@ shader-f16: ${shaderf16}
       velDivComputePass.end();
 
       for (let i = 0; i < pressureGlobalIter; i++) {
-        // const pressureComputePass = pressureComputeTimingHelpers[i].beginComputePass(encoder);
-        const pressureComputePass = encoder.beginComputePass();
+        const pressureComputePass = pressureComputeTimingHelpers[i].beginComputePass(encoder);
+        // const pressureComputePass = encoder.beginComputePass();
         pressureComputePass.setPipeline(pressureComputePipeline);
         pressureComputePass.setBindGroup(0, pressureComputeBindGroup);
         pressureComputePass.dispatchWorkgroups(...wgDispatchSize);
@@ -391,12 +406,6 @@ shader-f16: ${shaderf16}
       advectionComputePass.dispatchWorkgroups(...wgDispatchSize);
       advectionComputePass.end();
 
-      // const velDivComputePass2 = encoder.beginComputePass();
-      // velDivComputePass2.setPipeline(velDivComputePipeline);
-      // velDivComputePass2.setBindGroup(0, velDivComputeBindGroups[pingPongIndex]);
-      // velDivComputePass2.dispatchWorkgroups(...wgDispatchSize);
-      // velDivComputePass2.end();
-
       pingPongIndex = 1 - pingPongIndex;
     }
 
@@ -413,9 +422,11 @@ shader-f16: ${shaderf16}
     if (run) {
       advectionComputeTimingHelper.getResult().then(gpuTime => advectionComputeTime += (gpuTime / 1e6 - advectionComputeTime) / filterStrength);
       velDivComputeTimingHelper.getResult().then(gpuTime => velDivComputeTime += (gpuTime / 1e6 - velDivComputeTime) / filterStrength);
-      // let pressureTime = 0;
-      // pressureComputeTimingHelpers.forEach(e => e.getResult().then(gpuTime => pressureTime += gpuTime / 1e6));
-      // pressureComputeTime = (pressureTime - pressureComputeTime) / filterStrength
+
+      pressureComputeTimingHelpers.forEach(e => e.getResult().then(gpuTime => pressureTime += gpuTime));
+      pressureComputeTime += (pressureTime / 1e6 - pressureComputeTime) / filterStrength;
+      pressureTime = 0;
+
       projectionComputeTimingHelper.getResult().then(gpuTime => projectionComputeTime += (gpuTime / 1e6 - projectionComputeTime) / filterStrength);
     } else {
       advectionComputeTime = velDivComputeTime = pressureComputeTime = projectionComputeTime = 0;
@@ -431,8 +442,8 @@ shader-f16: ${shaderf16}
     gui.io.fps(fps);
     gui.io.jsTime(jsTime);
     gui.io.frameTime(deltaTime);
-    gui.io.computeTime(advectionComputeTime + velDivComputeTime + pressureComputeTime + projectionComputeTime);
-    // gui.io.boundaryTime(boundaryComputeTime);
+    gui.io.computeTime(advectionComputeTime + velDivComputeTime + projectionComputeTime);
+    gui.io.pressureTime(pressureComputeTime);
     gui.io.renderTime(renderTime);
   }, 100);
 

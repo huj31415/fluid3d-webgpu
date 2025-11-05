@@ -41,7 +41,7 @@ let renderTextureIdx = 4, pingPong = true;
 let dt = 1;
 let oldDt;
 
-let pressureGlobalIter = 4;
+let pressureGlobalIter = pressureGlobalIterTemp = 4;
 
 const sharedSettings = {
   radius: 24,
@@ -107,6 +107,7 @@ function softReset() {
 function hardReset() {
   initialize = true;
   clearPressureRefreshSmoke = true;
+  pressureGlobalIter = pressureGlobalIterTemp;
   cancelAnimationFrame(rafId);
   clearInterval(perfIntId);
   if (!vec3.equals(simulationDomain, newDomainSize)) resizeDomain(newDomainSize);
@@ -129,7 +130,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addNumericOutput("frameTime", "Frame", "ms", 2, "perfL");
   gui.addNumericOutput("jsTime", "JS", "ms", 2, "perfL");
   gui.addNumericOutput("computeTime", "Compute", "ms", 2, "perfR");
-  gui.addNumericOutput("boundaryTime", "Boundary", "ms", 2, "perfR");
+  gui.addNumericOutput("pressureTime", "Pressure", "ms", 2, "perfR");
   gui.addNumericOutput("renderTime", "Render", "ms", 2, "perfR");
 }
 
@@ -190,7 +191,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addNumericInput("xSize", false, "X size (reinit)", { min: 8, max: 1024, step: 8, val: simulationDomain[0], float: 0 }, "simCtrl", (value) => newDomainSize[0] = value, "Requires reinitialization to apply");
   gui.addNumericInput("ySize", false, "Y size (reinit)", { min: 8, max: 512, step: 8, val: simulationDomain[1], float: 0 }, "simCtrl", (value) => newDomainSize[1] = value, "Requires reinitialization to apply");
   gui.addNumericInput("zSize", false, "Z size (reinit)", { min: 8, max: 512, step: 8, val: simulationDomain[2], float: 0 }, "simCtrl", (value) => newDomainSize[2] = value, "Requires reinitialization to apply");
-  gui.addNumericInput("pressureGlobalIter", true, "Press. global iter", { min: 2, max: 16, step: 1, val: pressureGlobalIter, float: 0 }, "simCtrl", (value) => pressureGlobalIter = value, "Global pressure solver iterations per frame");
+  gui.addNumericInput("pressureGlobalIter", true, "Press. global iter", { min: 2, max: 16, step: 1, val: pressureGlobalIter, float: 0 }, "simCtrl", (value) => pressureGlobalIterTemp = value, "Global pressure solver iterations per frame");
   gui.addNumericInput("pressureLocalIter", true, "Press. local iter", { min: 1, max: 16, step: 1, val: 4, float: 0 }, "simCtrl", (value) => uni.values.pressureLocalIter.set([value]), "Local pressure solver iterations per global iter.");
   gui.addButton("toggleSim", "Play / Pause", false, "simCtrl", () => {
     if (oldDt) {
