@@ -40,6 +40,7 @@ function updateQuadSymmetry(x, yRel, zRel, newValue) {
  */
 function updateBarrierTexture(reset = false) {
   clearPressureRefreshSmoke = true;
+  updateBarrierMask = true;
   cleared = reset;
   device.queue.writeTexture(
     { texture: storage.barrierTex },

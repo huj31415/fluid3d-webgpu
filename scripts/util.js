@@ -8,11 +8,11 @@ uni.addUniform("volSize", "vec3f");       // volume size in voxels
 uni.addUniform("rayDtMult", "f32");       // raymarch sampling factor
 
 uni.addUniform("volSizeNorm", "vec3f");   // normalized volume size (volSize / max(volSize))
-uni.addUniform("vInflow", "f32");         // -x boundary inflow velocity
+uni.addUniform("vInflow", "f32");         // inflow velocity
 
 uni.addUniform("resolution", "vec2f");    // canvas resolution: x-width, y-height
 uni.addUniform("pressureLocalIter", "f32"); // number of rbgs subiterations using local memory 
-uni.addUniform("vectorVis", "f32");       // Whether to render vector or scalar field
+uni.addUniform("visMode", "f32");         // Visualization mode
 
 uni.addUniform("smokeHalfSize", "vec3f"); // Smoke source size in Y and Z
 uni.addUniform("SORomega", "f32");        // successive overrelaxation omega
@@ -20,6 +20,8 @@ uni.addUniform("SORomega", "f32");        // successive overrelaxation omega
 uni.addUniform("smokePos", "vec2f");      // Smoke source center position
 uni.addUniform("globalAlpha", "f32");     // global alpha multiplier
 uni.addUniform("smokeTemp", "f32");       // smoke temperature
+
+uni.addUniform("options", "f32");         // u32 bit-packed options - bit 0: barrier rendering on/off
 
 uni.finalize();
 
@@ -34,12 +36,14 @@ const storage = {
   barrierTex: null,
 };
 
-let initialize = true, clearPressureRefreshSmoke = true, refreshBarriers = true;
+let initialize = true, clearPressureRefreshSmoke = true, refreshBarriers = true, updateBarrierMask = true;
 
 let renderTextureIdx = 4, pingPong = true;
 
 let dt = 1;
 let oldDt;
+
+let options = 1;
 
 let pressureGlobalIter = pressureGlobalIterTemp = 4;
 
@@ -49,7 +53,7 @@ const sharedSettings = {
 };
 
 // simulation domain size [x, y, z], ex. [384, 256, 256], [512, 256, 384]
-const simulationDomain = [256, 192, 192]; //[384, 256, 256];//[768, 384, 384];
+const simulationDomain = [384, 192, 192]; //[384, 256, 256];//[768, 384, 384];
 let newDomainSize = vec3.clone(simulationDomain);
 let simVoxelCount = simulationDomain[0] * simulationDomain[1] * simulationDomain[2];
 
@@ -126,12 +130,17 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addGroup("perf", "Performance");
   gui.addStringOutput("res", "Resolution", "", "perf");
   gui.addHalfWidthGroups("perfL", "perfR", "perf");
+
   gui.addNumericOutput("fps", "FPS", "", 1, "perfL");
   gui.addNumericOutput("frameTime", "Frame", "ms", 2, "perfL");
   gui.addNumericOutput("jsTime", "JS", "ms", 2, "perfL");
-  gui.addNumericOutput("computeTime", "Compute", "ms", 2, "perfR");
+  gui.addNumericOutput("computeTime", "Compute", "ms", 2, "perfL");
+  gui.addNumericOutput("renderTime", "Render", "ms", 2, "perfL");
+
+  gui.addNumericOutput("vDivTime", "Divergence", "ms", 2, "perfR");
   gui.addNumericOutput("pressureTime", "Pressure", "ms", 2, "perfR");
-  gui.addNumericOutput("renderTime", "Render", "ms", 2, "perfR");
+  gui.addNumericOutput("vProjTime", "V Proj", "ms", 2, "perfR");
+  gui.addNumericOutput("advectionTime", "Advection", "ms", 2, "perfR");
 }
 
 // Camera state section
@@ -148,37 +157,37 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 {
   gui.addGroup("simCtrl", "Sim controls");
   gui.addDropdown("visType", "Visualization", ["Smoke", "Velocity", "Velocity magnitude", "Pressure", "Temperature", "Curl", "Divergence"], "simCtrl", null, (value) => {
-    uni.values.vectorVis.set([0]);
+    uni.values.visMode.set([0]);
     pingPong = false;
     switch (value) {
       case "Smoke":
         renderTextureIdx = 4;
         pingPong = true;
-        uni.values.vectorVis.set([0]);
+        uni.values.visMode.set([0]);
         break;
       case "Velocity":
         renderTextureIdx = 0;
-        uni.values.vectorVis.set([4]);
+        uni.values.visMode.set([4]);
         break;
       case "Velocity magnitude":
         renderTextureIdx = 0;
-        uni.values.vectorVis.set([3]);
+        uni.values.visMode.set([3]);
         break;
       case "Pressure":
         renderTextureIdx = 3;
-        uni.values.vectorVis.set([1]);
+        uni.values.visMode.set([1]);
         break;
       case "Temperature":
         renderTextureIdx = 4;
         pingPong = true;
-        uni.values.vectorVis.set([2]);
+        uni.values.visMode.set([2]);
         break;
       case "Curl":
         renderTextureIdx = 6;
-        uni.values.vectorVis.set([1]);
+        uni.values.visMode.set([1]);
       case "Divergence":
         renderTextureIdx = 2;
-        uni.values.vectorVis.set([1]);
+        uni.values.visMode.set([1]);
         break;
     }
   });
@@ -256,7 +265,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addRadioOptions("shape", ["circular", "square", "linear"], "circular", "presets", {}, (value) => {presetSettings.Aperture.shape = shapes[value]; autoUpdate(doAutoUpdate)});
   gui.addNumericInput("nSides", true, "n sides", { min: 3, max: 24, step: 1, val: 3, float: 0 }, "presets", (value) => {presetSettings.Prism.n = value; autoUpdate(doAutoUpdate)});
 
-  gui.addNumericInput("chord", true, "Chord", { min: 8, max: 64, step: 1, val: 64, float: 0 }, "presets", (value) => {presetSettings.FlatWing.chord = value; autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("chord", true, "Chord", { min: 8, max: 128, step: 1, val: 64, float: 0 }, "presets", (value) => {presetSettings.FlatWing.chord = value; autoUpdate(doAutoUpdate)});
   gui.addNumericInput("thickness", true, "Thickness", { min: 2, max: 10, step: 1, val: 3, float: 0 }, "presets", (value) => {presetSettings.FlatWing.thickness = value; autoUpdate(doAutoUpdate)});
 
   gui.addNumericInput("slitWidth", true, "Slit width", { min: 3, max: 512, step: 1, val: 8, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitWidth = value; autoUpdate(doAutoUpdate)});
@@ -287,6 +296,11 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addGroup("visCtrl", "Visualization controls");
   gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.globalAlpha.set([value]), "Global alpha multiplier");
   gui.addNumericInput("rayDtMult", true, "Ray dt mult", { min: 0.1, max: 5, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => uni.values.rayDtMult.set([value]), "Raymarching step multipler; higher has better visual quality, lower has better performance");
+  gui.addCheckbox("showBarriers", "Show barriers", true, "visCtrl", (checked) => {
+    if (checked) options |= 1;
+    else options &= ~1;
+    uni.values.options.set([options]);
+  });
 }
 
 // Camera keybinds

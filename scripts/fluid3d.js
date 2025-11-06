@@ -48,9 +48,13 @@ texture-formats-tier1: ${textureTier1}
     }
   });
   device.addEventListener('uncapturederror', event => {
-    if (event.error.message.includes("max buffer size limit"))
+    const msg = event.error.message;
+    if (msg.includes("max buffer size limit"))
       alert(`Max buffer size exceeded. Your device supports max size ${maxBufferSize}, specified size ${simVoxelCount() * 4}`);
-    // else alert(msg);
+    else {
+      alert(msg);
+      return;
+    }
   });
 
   // restart if device crashes
@@ -182,7 +186,17 @@ texture-formats-tier1: ${textureTier1}
     label: "clear pressure compute bind group"
   });
 
-  const advectComputePipeline = newComputePipeline(advectionShaderCode, "advection");
+  const barrierMaskComputePipeline = newComputePipeline(barrierMaskShaderCode, "barrier mask");
+
+  const barrierMaskComputeBindGroup = device.createBindGroup({
+    layout: barrierMaskComputePipeline.getBindGroupLayout(0),
+    entries: [
+      // { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: storage.barrierTex.createView() },
+      { binding: 2, resource: storage.barrierMask.createView() },
+    ],
+    label: "barrier mask compute bind group"
+  });
 
   const linSampler = device.createSampler({
     magFilter: "linear",
@@ -191,6 +205,8 @@ texture-formats-tier1: ${textureTier1}
     addressModeV: "clamp-to-edge",
     addressModeW: "clamp-to-edge",
   });
+
+  const advectComputePipeline = newComputePipeline(advectionShaderCode, "advection");
 
   const advectComputeBindGroup = (velTexOld, velTexNew, smokeTexOld, smokeTexNew) => device.createBindGroup({
     layout: advectComputePipeline.getBindGroupLayout(0),
@@ -222,7 +238,8 @@ texture-formats-tier1: ${textureTier1}
       { binding: 1, resource: velTex.createView() },
       { binding: 2, resource: storage.divTex.createView() },
       { binding: 3, resource: storage.curlTex.createView() },
-      { binding: 4, resource: storage.barrierTex.createView() },
+      { binding: 4, resource: storage.barrierMask.createView() },
+      // { binding: 4, resource: storage.barrierTex.createView() },
     ],
     label: "velocity divergence compute bind group"
   });
@@ -240,7 +257,8 @@ texture-formats-tier1: ${textureTier1}
       { binding: 0, resource: { buffer: uniformBuffer } },
       { binding: 1, resource: storage.divTex.createView() },
       { binding: 2, resource: storage.pressureTex.createView() },
-      { binding: 3, resource: storage.barrierTex.createView() },
+      { binding: 3, resource: storage.barrierMask.createView() },
+      // { binding: 3, resource: storage.barrierTex.createView() },
     ],
     label: "pressure compute bind group"
   });
@@ -254,7 +272,8 @@ texture-formats-tier1: ${textureTier1}
       { binding: 1, resource: velTexOld.createView() },
       { binding: 2, resource: velTexNew.createView() },
       { binding: 3, resource: storage.pressureTex.createView() },
-      { binding: 4, resource: storage.barrierTex.createView() },
+      // { binding: 4, resource: storage.barrierTex.createView() },
+      { binding: 4, resource: storage.barrierMask.createView() },
     ],
     label: "pressure projection compute bind group"
   });
@@ -376,6 +395,15 @@ texture-formats-tier1: ${textureTier1}
       clearPressureRefreshSmokeComputePass.end();
     }
 
+    if (updateBarrierMask) {
+      updateBarrierMask = false;
+      const barrierMaskComputePass = encoder.beginComputePass();
+      barrierMaskComputePass.setPipeline(barrierMaskComputePipeline);
+      barrierMaskComputePass.setBindGroup(0, barrierMaskComputeBindGroup);
+      barrierMaskComputePass.dispatchWorkgroups(...wgDispatchSize);
+      barrierMaskComputePass.end();
+    }
+
     const run = dt > 0;
 
     if (run) {
@@ -442,9 +470,12 @@ texture-formats-tier1: ${textureTier1}
     gui.io.fps(fps);
     gui.io.jsTime(jsTime);
     gui.io.frameTime(deltaTime);
-    gui.io.computeTime(advectionComputeTime + velDivComputeTime + projectionComputeTime);
-    gui.io.pressureTime(pressureComputeTime);
+    gui.io.computeTime(advectionComputeTime + velDivComputeTime + projectionComputeTime + pressureComputeTime);
     gui.io.renderTime(renderTime);
+    gui.io.vDivTime(velDivComputeTime);
+    gui.io.pressureTime(pressureComputeTime);
+    gui.io.vProjTime(projectionComputeTime);
+    gui.io.advectionTime(advectionComputeTime);
   }, 100);
 
   camera.updatePosition();
@@ -456,7 +487,7 @@ texture-formats-tier1: ${textureTier1}
   uni.values.resolution.set([canvas.width, canvas.height]);
   uni.values.pressureLocalIter.set([4]); // 2-8 typical, 2-4 best according to chatgpt
   uni.values.SORomega.set([1.6]);
-  // uni.values.vectorVis.set([0]);
+  // uni.values.visMode.set([0]);
   uni.values.globalAlpha.set([1]);
   uni.values.smokePos.set(smokePos);
   uni.values.smokeHalfSize.set(smokeHalfSize);
@@ -467,5 +498,6 @@ texture-formats-tier1: ${textureTier1}
 const camera = new Camera(defaults);
 uni.values.vInflow.set([2]);
 uni.values.smokeTemp.set([1]);
+uni.values.options.set([options]);
 
 main().then(() => refreshPreset(false));
