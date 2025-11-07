@@ -157,7 +157,6 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 {
   gui.addGroup("simCtrl", "Sim controls");
   gui.addDropdown("visType", "Visualization", ["Smoke", "Velocity", "Velocity magnitude", "Pressure", "Temperature", "Curl", "Divergence"], "simCtrl", null, (value) => {
-    uni.values.visMode.set([0]);
     pingPong = false;
     switch (value) {
       case "Smoke":
@@ -184,7 +183,8 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
         break;
       case "Curl":
         renderTextureIdx = 6;
-        uni.values.visMode.set([1]);
+        uni.values.visMode.set([5]);
+        break;
       case "Divergence":
         renderTextureIdx = 2;
         uni.values.visMode.set([1]);

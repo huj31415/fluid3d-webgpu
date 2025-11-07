@@ -1,6 +1,6 @@
-// preprocess barriers and pack into cells?
 const initShaderCode = /* wgsl */`
 ${uni.uniformStruct}
+
 // @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var velOld:  texture_storage_3d<rgba32float, write>;
 @group(0) @binding(2) var velNew:  texture_storage_3d<rgba32float, write>;
@@ -31,6 +31,7 @@ fn main(
 
 const clearPressureRefreshSmokeShaderCode = /* wgsl */`
 ${uni.uniformStruct}
+
 @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var pressure:  texture_storage_3d<r32float, write>;
 @group(0) @binding(2) var smokeOld:  texture_storage_3d<rg32float, write>;
@@ -62,7 +63,7 @@ fn main(
 `;
 
 // create barrier bitmask texture
-// 1 if barrier, 0 if open, 8 bits: none,current,-x,+x,-y,+y,-z,+z
+// 1 if barrier, 0 if open, 8 bits: unused,self,-x,+x,-y,+y,-z,+z
 // can use countOneBits to get number of barriers around cell if necessary
 // check barriers with mask & (1 << directionIndex)
 const barrierMaskShaderCode = /* wgsl */`
@@ -76,7 +77,7 @@ override WG_X: u32;
 override WG_Y: u32;
 override WG_Z: u32;
 
-const directions: array<vec3i, 6> = array<vec3i, 6>(
+const directions: array<vec3i, 7> = array<vec3i, 7>(
   // 00-05 orthogonal directions (cubic faces)
   vec3i(-1,  0,  0), // xn
   vec3i( 1,  0,  0), // xp
@@ -84,6 +85,7 @@ const directions: array<vec3i, 6> = array<vec3i, 6>(
   vec3i( 0,  1,  0), // yp
   vec3i( 0,  0, -1), // zn
   vec3i( 0,  0,  1), // zp
+  vec3i( 0,  0,  0)  // self
 );
 
 @compute @workgroup_size(WG_X, WG_Y, WG_Z)
@@ -92,17 +94,10 @@ fn main(
 ) {
   let gid_i = vec3i(gid);
   var mask = 0u;
-  for (var i = 0u; i < 6u; i += 1) {
-    let idx = gid_i + directions[i];
-    if (textureLoad(barrierTex, idx, 0).x == 0
-      // && all(idx >= vec3i(0))
-      // && all(idx < vec3i(uni.volSize))
-    ) {
+  for (var i = 0u; i < 7u; i += 1) {
+    if (textureLoad(barrierTex, gid_i + directions[i], 0).x == 0) {
       mask |= (1u << i);
     }
-  }
-  if (textureLoad(barrierTex, gid_i, 0).x == 0) {
-    mask |= (1u << 6);
   }
   textureStore(barrierMask, gid, vec4u(mask,0,0,0));
 }
@@ -181,7 +176,7 @@ ${uni.uniformStruct}
 @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var vel:  texture_3d<f32>;
 @group(0) @binding(2) var div:  texture_storage_3d<r32float, write>;
-@group(0) @binding(3) var curl: texture_storage_3d<r32float, write>;
+@group(0) @binding(3) var curl: texture_storage_3d<rgba32float, write>;
 @group(0) @binding(4) var barrierMaskTex: texture_3d<u32>;
 
 override WG_X: u32;
@@ -206,10 +201,10 @@ fn main(
   let gid_i = vec3i(gid);
 
   // check if the index is within bounds
-  if (any(vec3f(gid) >= uni.volSize)) { return; }
+  if (any(gid >= vec3u(uni.volSize))) { return; }
 
   let barrierMask = textureLoad(barrierMaskTex, gid_i, 0).r;
-  if ((barrierMask & (1u << 6)) == 1) { textureStore(curl, gid, vec4f(100)); return; }
+  if ((barrierMask & (1u << 6)) == 1) { return; }
 
   var divV = 0.0;
 
@@ -248,11 +243,12 @@ fn main(
     curlV += vec3f(-vel.y, vel.x, 0);
   }
 
-  
-  // calculate and save divergence with dx = 1
+  // store divergence with dx = 1
   textureStore(div, gid, vec4f(divV * 0.5, 0, 0, 0));
   // store curl with dx = 1
-  textureStore(curl, gid, vec4f(curlV * 0.5, 0));
+  if (all(gid < vec3u(uni.volSize) - vec3u(1)) && all(gid > vec3u(0))) {
+    textureStore(curl, gid, vec4f(curlV * 0.5, 0));
+  }
 }
 `;
 
@@ -288,7 +284,7 @@ fn tileIndex(idx: vec3i) -> u32 {
   return sidx.x + (WG_X + 2u) * (sidx.y + (WG_Y + 2u) * sidx.z);
 }
 
-fn neighborSum(lid_i: vec3i, gid: vec3u, currentPressure: f32, barrierMask: u32, indices: array<u32, 6>) -> f32 {
+fn neighborSum(gid: vec3u, currentPressure: f32, barrierMask: u32, indices: array<u32, 6>) -> f32 {
   // let pressureXn = select(currentPressure, tile[indices[0]], (barrierMask & (1 << 0)) == 0);
   let pressureXn = select(currentPressure, select(tile[indices[0]], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 0)) == 0);
   // let pressureXp = select(currentPressure, select(tile[indices[1]], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 1)) == 0);
@@ -352,12 +348,12 @@ fn main(
   // red-black Gauss-Seidel iteration with overrelaxation
   for (var i = 0; i < i32(uni.pressureLocalIter); i = i + 1) {
     if (isRed) {
-      let sum = neighborSum(lid_i, gid, pressureValue, barrierMask, indices);
+      let sum = neighborSum(gid, pressureValue, barrierMask, indices);
       tile[currentTileIndex] = SORa * tile[currentTileIndex] + SORb * (sum - rhs);
     }
     workgroupBarrier();
     if (!isRed) {
-      let sum = neighborSum(lid_i, gid, pressureValue, barrierMask, indices);
+      let sum = neighborSum(gid, pressureValue, barrierMask, indices);
       tile[currentTileIndex] = SORa * tile[currentTileIndex] + SORb * (sum - rhs);
     }
     workgroupBarrier();
@@ -413,7 +409,7 @@ fn main(
   let pressureValue = textureLoad(pressure, gid_i).r;
   var oldVel = textureLoad(velOld, gid_i).xyz;
 
-  // let vMask = vec3<bool>(openXp || openXn, openYp || openYn, openZp || openZn);
+  // true if both sides open, otherwise false
   let vMask = vec3u((barrierMask & 3u), (barrierMask & (3u << 2)), (barrierMask & (3u << 4))) == vec3u(0);
 
   let pressureGrad = 0.5 * vec3f(

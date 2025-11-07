@@ -97,7 +97,7 @@ texture-formats-tier1: ${textureTier1}
   // smoke + temp
   storage.smokeTemp0 = newTexture("smokeTemp0", "rg32float");
   storage.smokeTemp1 = newTexture("smokeTemp1", "rg32float");
-  storage.curlTex = newTexture("curl");
+  storage.curlTex = newTexture("curl", "rgba32float");
   storage.barrierTex = newTexture("barrier", "r8unorm", false);
   // store bitmask for barriers in 6 directions
   storage.barrierMask = newTexture("barrierMask", "r8uint", true);
@@ -360,6 +360,13 @@ texture-formats-tier1: ${textureTier1}
   let pingPongIndex = 0;
   let pressureTime = 0;
 
+  function createComputePass(pass, pipeline, bindGroup) {
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(...wgDispatchSize);
+    pass.end();
+  }
+
   function render() {
     const startTime = performance.now();
     deltaTime += Math.min(startTime - lastFrameTime - deltaTime, 1e4) / filterStrength;
@@ -379,60 +386,31 @@ texture-formats-tier1: ${textureTier1}
 
     if (initialize) {
       initialize = false;
-      const initComputePass = encoder.beginComputePass();
-      initComputePass.setPipeline(initComputePipeline);
-      initComputePass.setBindGroup(0, initComputeBindGroup);
-      initComputePass.dispatchWorkgroups(...wgDispatchSize);
-      initComputePass.end();
+      createComputePass(encoder.beginComputePass(), initComputePipeline, initComputeBindGroup);
     }
 
     if (clearPressureRefreshSmoke) {
       clearPressureRefreshSmoke = false;
-      const clearPressureRefreshSmokeComputePass = encoder.beginComputePass();
-      clearPressureRefreshSmokeComputePass.setPipeline(clearPressureRefreshSmokeComputePipeline);
-      clearPressureRefreshSmokeComputePass.setBindGroup(0, clearPressureRefreshSmokeComputeBindGroup);
-      clearPressureRefreshSmokeComputePass.dispatchWorkgroups(...wgDispatchSize);
-      clearPressureRefreshSmokeComputePass.end();
+      createComputePass(encoder.beginComputePass(), clearPressureRefreshSmokeComputePipeline, clearPressureRefreshSmokeComputeBindGroup);
     }
 
     if (updateBarrierMask) {
       updateBarrierMask = false;
-      const barrierMaskComputePass = encoder.beginComputePass();
-      barrierMaskComputePass.setPipeline(barrierMaskComputePipeline);
-      barrierMaskComputePass.setBindGroup(0, barrierMaskComputeBindGroup);
-      barrierMaskComputePass.dispatchWorkgroups(...wgDispatchSize);
-      barrierMaskComputePass.end();
+      createComputePass(encoder.beginComputePass(), barrierMaskComputePipeline, barrierMaskComputeBindGroup);
     }
 
     const run = dt > 0;
 
     if (run) {
-      const velDivComputePass = velDivComputeTimingHelper.beginComputePass(encoder);
-      velDivComputePass.setPipeline(velDivComputePipeline);
-      velDivComputePass.setBindGroup(0, velDivComputeBindGroups[0]);
-      velDivComputePass.dispatchWorkgroups(...wgDispatchSize);
-      velDivComputePass.end();
+      createComputePass(velDivComputeTimingHelper.beginComputePass(encoder), velDivComputePipeline, velDivComputeBindGroups[0]);
 
       for (let i = 0; i < pressureGlobalIter; i++) {
-        const pressureComputePass = pressureComputeTimingHelpers[i].beginComputePass(encoder);
-        // const pressureComputePass = encoder.beginComputePass();
-        pressureComputePass.setPipeline(pressureComputePipeline);
-        pressureComputePass.setBindGroup(0, pressureComputeBindGroup);
-        pressureComputePass.dispatchWorkgroups(...wgDispatchSize);
-        pressureComputePass.end();
+        createComputePass(pressureComputeTimingHelpers[i].beginComputePass(encoder), pressureComputePipeline, pressureComputeBindGroup);
       }
 
-      const projectionComputePass = projectionComputeTimingHelper.beginComputePass(encoder);
-      projectionComputePass.setPipeline(projectionComputePipeline);
-      projectionComputePass.setBindGroup(0, projectionComputeBindGroups[0]);
-      projectionComputePass.dispatchWorkgroups(...wgDispatchSize);
-      projectionComputePass.end();
+      createComputePass(projectionComputeTimingHelper.beginComputePass(encoder), projectionComputePipeline, projectionComputeBindGroups[0]);
 
-      const advectionComputePass = advectionComputeTimingHelper.beginComputePass(encoder);
-      advectionComputePass.setPipeline(advectComputePipeline);
-      advectionComputePass.setBindGroup(0, advectComputeBindGroups[pingPongIndex]);
-      advectionComputePass.dispatchWorkgroups(...wgDispatchSize);
-      advectionComputePass.end();
+      createComputePass(advectionComputeTimingHelper.beginComputePass(encoder), advectComputePipeline, advectComputeBindGroups[pingPongIndex]);
 
       pingPongIndex = 1 - pingPongIndex;
     }
