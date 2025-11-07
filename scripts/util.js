@@ -21,6 +21,7 @@ uni.addUniform("smokePos", "vec2f");      // Smoke source center position
 uni.addUniform("globalAlpha", "f32");     // global alpha multiplier
 uni.addUniform("smokeTemp", "f32");       // smoke temperature
 
+uni.addUniform("visMult", "f32");         // Field visualization multiplier
 uni.addUniform("options", "f32");         // u32 bit-packed options - bit 0: barrier rendering on/off
 
 uni.finalize();
@@ -271,7 +272,8 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addNumericInput("slitWidth", true, "Slit width", { min: 3, max: 512, step: 1, val: 8, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitWidth = value; autoUpdate(doAutoUpdate)});
   gui.addNumericInput("slitSpacing", true, "Slit spacing", { min: 0, max: 512, step: 1, val: 32, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitSpacing = value; autoUpdate(doAutoUpdate)});
   gui.addNumericInput("slitHeight", true, "Slit height", { min: 0, max: 512, step: 1, val: 64, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitHeight = value; autoUpdate(doAutoUpdate)});
-
+  
+  gui.addNumericInput("taperAngle", true, "Taper angle", { min: -60, max: 60, step: 1, val: -30, float: 0 }, "presets", (value) => {presetSettings.Aperture.taperAngle = -value.toRad(); autoUpdate(doAutoUpdate)});
   gui.addCheckbox("invert", "Invert barrier", false, "presets", (checked) => presetSettings.Aperture.invert = checked);
 
   gui.addNumericInput("barrierThickness", true, "Thickness", { min: 1, max: 16, step: 1, val: 16, float: 0 }, "presets", (value) => {barrierThickness = value; autoUpdate(doAutoUpdate)});
@@ -296,6 +298,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addGroup("visCtrl", "Visualization controls");
   gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.globalAlpha.set([value]), "Global alpha multiplier");
   gui.addNumericInput("rayDtMult", true, "Ray dt mult", { min: 0.1, max: 5, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => uni.values.rayDtMult.set([value]), "Raymarching step multipler; higher has better visual quality, lower has better performance");
+  gui.addNumericInput("visMult", true, "Value multiplier", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.visMult.set([value]));
   gui.addCheckbox("showBarriers", "Show barriers", true, "visCtrl", (checked) => {
     if (checked) options |= 1;
     else options &= ~1;

@@ -547,7 +547,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
     var sampleColor = vec4f(0);
     if (uni.visMode <= 2.0) { // 0: scalar-abs-bw, 1: scalar-color
-      let sampleValue = select(textureSampleLevel(stateTexture, stateSampler, samplePos, 0).x, textureSampleLevel(stateTexture, stateSampler, samplePos, 0).y - 1, uni.visMode == 2);//y-uni.smokeTemp; // scalar, also add option for y-1 for smoke temperature
+      let sampleValue = uni.visMult * select(textureSampleLevel(stateTexture, stateSampler, samplePos, 0).x, textureSampleLevel(stateTexture, stateSampler, samplePos, 0).y - 1, uni.visMode == 2);//y-uni.smokeTemp; // scalar, also add option for y-1 for smoke temperature
       // Skip if empty and not a boundary
       if (sampleValue == 0.0 && barrier == 1.0) {
         continue;
@@ -560,7 +560,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       }
     } else { // 3: vel-xyz-color, 4: vel-mag-color, 5: curl-xyz-color
       // Sample state
-      let sampleValue = textureSampleLevel(stateTexture, stateSampler, samplePos, 0).xyz - select(vec3f(0), vec3f(uni.vInflow / 2, 0, 0), uni.visMode < 5.0); // free velocity half of vInflow?
+      let sampleValue = uni.visMult * (textureSampleLevel(stateTexture, stateSampler, samplePos, 0).xyz - select(vec3f(0), vec3f(uni.vInflow / 2, 0, 0), uni.visMode < 5.0)); // free velocity half of vInflow?
       // Skip if empty and not a boundary
       if (all(vec3f(sampleValue) == vec3f(0.0)) && barrier == 1.0) {
         continue;

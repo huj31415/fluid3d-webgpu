@@ -461,12 +461,9 @@ texture-formats-tier1: ${textureTier1}
   uni.values.dt.set([dt]);
   uni.values.volSize.set(simulationDomain);
   uni.values.volSizeNorm.set(simulationDomainNorm);
-  uni.values.rayDtMult.set([2]);
   uni.values.resolution.set([canvas.width, canvas.height]);
-  uni.values.pressureLocalIter.set([4]); // 2-8 typical, 2-4 best according to chatgpt
   uni.values.SORomega.set([1.6]);
   // uni.values.visMode.set([0]);
-  uni.values.globalAlpha.set([1]);
   uni.values.smokePos.set(smokePos);
   uni.values.smokeHalfSize.set(smokeHalfSize);
 
@@ -477,5 +474,9 @@ const camera = new Camera(defaults);
 uni.values.vInflow.set([2]);
 uni.values.smokeTemp.set([1]);
 uni.values.options.set([options]);
+uni.values.pressureLocalIter.set([4]); // 2-8 typical, 2-4 best according to chatgpt
+uni.values.globalAlpha.set([1]);
+uni.values.rayDtMult.set([2]);
+uni.values.visMult.set([1]);
 
 main().then(() => refreshPreset(false));

@@ -9,7 +9,7 @@ const shapes = Object.freeze({
 
 const presetSettings = {
   DoubleSlit: { slitWidth: 8, slitSpacing: 32, slitHeight: 64 },
-  Aperture: { shape: shapes.circular, invert: false },
+  Aperture: { shape: shapes.circular, invert: false, taperAngle: (30).toRad() },
   Prism: { n: 3, rot: (10).toRad(), width: 0.5 },
   FlatWing: { chord: 64, thickness: 3, AoA: (20).toRad(), width: 0.5 },
 }
@@ -54,14 +54,17 @@ const lerp = (value, in_min, in_max, out_min, out_max) => ((value - in_min) * (o
 const mod = (x, a) => x - a * Math.floor(x / a);
 
 const flatPresets = Object.freeze({
-  DoubleSlit: (y, z, args = presetSettings.DoubleSlit) => (
+  DoubleSlit: (x, y, z, thickness, args = presetSettings.DoubleSlit) => (
     y > args.slitHeight / 2 // fill outside of slit area
       || (y <= args.slitHeight / 2 // fill if inside slit height and outside slit opening
         && (z < (args.slitSpacing - args.slitWidth) / 2 || z > (args.slitSpacing + args.slitWidth) / 2)
       ) ? 0 : 255
   ),
   // cutout grid / 2d version of double slit
-  Aperture: (y, z, args = presetSettings.Aperture) => (args.shape(y, z) >= sharedSettings.radius * sharedSettings.radius) ? args.invert ? 1 : 0 : args.invert ? 0 : 1,
+  Aperture: (x, y, z, thickness, args = presetSettings.Aperture) => (
+    (args.shape(y, z) >= (sharedSettings.radius - Math.tan(args.taperAngle) * (args.taperAngle < 0 ? Math.max : Math.min)(0, x - thickness / 2)) ** 2)
+    ? args.invert : !args.invert
+  ) * 255,
 });
 
 /**
@@ -75,7 +78,7 @@ function quadSymmetricFlatPreset(preset, distance = 64, thickness = 2, args) {
   for (let z = 0; z <= zMidpt; z++) {
     for (let y = 0; y <= yMidpt; y++) {
       for (let x = distance; x < distance + thickness; x++) {
-        updateQuadSymmetry(x, y, z, preset(y, z, args));
+        updateQuadSymmetry(x, y, z, preset(x - distance, y, z, thickness, args));
       }
     }
   }
