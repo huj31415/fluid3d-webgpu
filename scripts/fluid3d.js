@@ -13,10 +13,29 @@ async function main() {
 
   const maxComputeInvocationsPerWorkgroup = adapter.limits.maxComputeInvocationsPerWorkgroup;
   const maxBufferSize = adapter.limits.maxBufferSize;
+  const maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
   const f32filterable = adapter.features.has("float32-filterable");
   const shaderf16 = adapter.features.has("shader-f16");
+  
+  if (!shaderf16 && !gpuInfo) {
+    alert("shader-f16 feature not supported, using 32 bit float textures and reducing domain size");
+    newDomainSize = [256,128,192];
+    hardReset();
+    // todo: adjust everything else to new size
+  }
+
+  const floatPrecision = shaderf16 ? 16 : 32;
+  const f16header = shaderf16 ? `
+enable f16;
+// alias vec4h = vec4<f${floatPrecision}>;
+// alias vec3h = vec3<f${floatPrecision}>;
+// alias vec2h = vec2<f${floatPrecision}>;
+` : "";
+
   const textureTier1 = adapter.features.has("texture-formats-tier1");
-  if (!textureTier1) alert("texture-formats-tier1 feature required");
+  if (!textureTier1 && !gpuInfo) alert("texture-formats-tier1 feature required");
+  const textureTier2 = adapter.features.has("texture-formats-tier2");
+  if (!textureTier2 && !gpuInfo) alert("texture-formats-tier2 unsupported, may reduce performance");
 
   // compute workgroup size 16*8*8 | 32*8*4 | 64*4*4 = 1024 threads if maxComputeInvocationsPerWorkgroup >= 1024, otherwise 16*4*4 = 256 threads
   const largeWg = maxComputeInvocationsPerWorkgroup >= 1024;
@@ -27,34 +46,44 @@ async function main() {
 <pre><span ${!largeWg ? "class='warn'" : ""}>maxComputeInvocationsPerWorkgroup: ${maxComputeInvocationsPerWorkgroup}
 workgroup: [${wg_x}, ${wg_y}, ${wg_z}]</span>
 maxBufferSize: ${maxBufferSize}
+maxStorageBufferBindingSize: ${maxStorageBufferBindingSize}
 f32filterable: ${f32filterable}
 shader-f16: ${shaderf16}
 texture-formats-tier1: ${textureTier1}
+<span ${!textureTier2 ? "class='warn'" : ""}>texture-formats-tier2: ${textureTier2}</span>
 </pre>
     `);
     gpuInfo = true;
+
+    // return to implement the f32-only domain size change
+    // because the dawn upload buffer is somehow 3.6GB even though total texture size is significantly smaller
+    if (!shaderf16) return;
   }
+
 
   device = await adapter?.requestDevice({
     requiredFeatures: [
       ...(adapter.features.has("timestamp-query") ? ["timestamp-query"] : []),
       ...(f32filterable ? ["float32-filterable"] : []),
       ...(textureTier1 ? ["texture-formats-tier1"] : []),
-      // ...(shaderf16 ? ["shader-f16"] : []),
+      ...(textureTier2 ? ["texture-formats-tier2"] : []),
+      ...(shaderf16 ? ["shader-f16"] : []),
     ],
     requiredLimits: {
       maxComputeInvocationsPerWorkgroup: maxComputeInvocationsPerWorkgroup,
       maxBufferSize: maxBufferSize,
+      maxStorageBufferBindingSize: maxStorageBufferBindingSize,
     }
   });
   device.addEventListener('uncapturederror', event => {
     const msg = event.error.message;
     if (msg.includes("max buffer size limit"))
-      alert(`Max buffer size exceeded. Your device supports max size ${maxBufferSize}, specified size ${simVoxelCount() * 4}`);
+      alert(`Max buffer size exceeded. Reduce the simulation domain size to decrease buffer size`);
     else {
       alert(msg);
-      return;
     }
+    cancelAnimationFrame(rafId);
+    return;
   });
 
   // restart if device crashes
@@ -81,60 +110,26 @@ texture-formats-tier1: ${textureTier1}
   // advect (v) -> jacobi diffusion (if viscous) (div,p) -> force
   // -> jacobi pressure (>20iter) -> pressure projection (save in local memory? probably not due to halo access for laplacian for projection step)
 
-  const newTexture = (name, format = "r32float", storage = true) => device.createTexture({
+  const newTexture = (name, format = `r${floatPrecision}float`, copyDst = false, storage = true) => device.createTexture({
     size: simulationDomain,
     dimension: "3d",
     format: format,
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | (storage ? GPUTextureUsage.STORAGE_BINDING : 0),
+    usage: GPUTextureUsage.TEXTURE_BINDING | (copyDst ? GPUTextureUsage.COPY_DST : 0) | (storage ? GPUTextureUsage.STORAGE_BINDING : 0),
     label: `${name} texture`
   });
 
   // staggered grids?
-  storage.velTex0 = newTexture("vel0", "rgba32float"); // try rgba16f using shader-f16 feature
-  storage.velTex1 = newTexture("vel1", "rgba32float");
+  storage.velTex0 = newTexture("vel0", `rgba${floatPrecision}float`); // try rgba16f using shader-f16 feature
+  storage.velTex1 = newTexture("vel1", `rgba${floatPrecision}float`);
   storage.divTex = newTexture("divergence");
-  storage.pressureTex = newTexture("pressure");
+  storage.pressureTex = newTexture("pressure", `r${textureTier2 ? floatPrecision : 32}float`);
   // smoke + temp
-  storage.smokeTemp0 = newTexture("smokeTemp0", "rg32float");
-  storage.smokeTemp1 = newTexture("smokeTemp1", "rg32float");
-  storage.curlTex = newTexture("curl", "rgba32float");
-  storage.barrierTex = newTexture("barrier", "r8unorm", false);
+  storage.smokeTemp0 = newTexture("smokeTemp0", `rg${floatPrecision}float`);
+  storage.smokeTemp1 = newTexture("smokeTemp1", `rg${floatPrecision}float`);
+  storage.curlTex = newTexture("curl", `rgba${floatPrecision}float`);
+  storage.barrierTex = newTexture("barrier", "r8unorm", true, false);
   // store bitmask for barriers in 6 directions
-  storage.barrierMask = newTexture("barrierMask", "r8uint", true);
-  // device.createBuffer({
-  //   size: simVoxelCount, // 1 byte per voxel
-  //   usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  //   label: "barrier mask buffer",
-  // });
-
-  // const velData = new Float32Array(simVoxelCount * 4).fill(0);
-  // for (let z = 0; z < simulationDomain[2]; z++) {
-  //   for (let y = 0; y < simulationDomain[1]; y++) {
-  //     for (let x = 0; x < simulationDomain[0]; x++) {
-  //       const index = x + y * simulationDomain[0] + z * simulationDomain[0] * simulationDomain[1];
-  //       if (x <= 60 && x >= 0 && (y-simulationDomain[1]/2)**2 + (z-simulationDomain[2]/2)**2 < 16**2) {
-  //         // initial velocity field
-  //         velData[index * 4 + 0] = 2;
-  //         velData[index * 4 + 1] = 0;
-  //         velData[index * 4 + 2] = 0;
-  //         velData[index * 4 + 3] = 0;
-  //       }
-  //       if (x >= 256-60 && x < 256-20 && (y-simulationDomain[1]/2)**2 + (z-simulationDomain[2]/2)**2 < 10**2) {
-  //         // initial velocity field
-  //         velData[index * 4 + 0] = -1;
-  //         velData[index * 4 + 1] = 0;
-  //         velData[index * 4 + 2] = 0;
-  //         velData[index * 4 + 3] = 0;
-  //       }
-  //     }
-  //   }
-  // }
-  // device.queue.writeTexture(
-  //   { texture: storage.velTex0 },
-  //   velData,
-  //   { offset: 0, bytesPerRow: simulationDomain[0] * 4 * 4, rowsPerImage: simulationDomain[1] },
-  //   { width: simulationDomain[0], height: simulationDomain[1], depthOrArrayLayers: simulationDomain[2] },
-  // );
+  storage.barrierMask = newTexture("barrierMask", "r8uint", false, true);
 
   updateBarrierTexture();
 
@@ -145,7 +140,7 @@ texture-formats-tier1: ${textureTier1}
       layout: 'auto',
       compute: {
         module: device.createShaderModule({
-          code: shaderCode,
+          code: f16header + shaderCode(floatPrecision, textureTier2 ? floatPrecision : 32),
           label: `${name} compute module`
         }),
         constants: {

@@ -116,7 +116,7 @@ function hardReset() {
   cancelAnimationFrame(rafId);
   clearInterval(perfIntId);
   if (!vec3.equals(simulationDomain, newDomainSize)) resizeDomain(newDomainSize);
-  storage.barrierTex.destroy();
+  if (storage.barrierTex) storage.barrierTex.destroy();
   if (cleared) main();
   else main().then(refreshPreset);
 }
@@ -138,7 +138,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addNumericOutput("computeTime", "Compute", "ms", 2, "perfL");
   gui.addNumericOutput("renderTime", "Render", "ms", 2, "perfL");
 
-  gui.addNumericOutput("vDivTime", "Divergence", "ms", 2, "perfR");
+  gui.addNumericOutput("vDivTime", "Div+Curl", "ms", 2, "perfR");
   gui.addNumericOutput("pressureTime", "Pressure", "ms", 2, "perfR");
   gui.addNumericOutput("vProjTime", "V Proj", "ms", 2, "perfR");
   gui.addNumericOutput("advectionTime", "Advection", "ms", 2, "perfR");
@@ -282,7 +282,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addDropdown("presetSelect", "Select preset", ["Prism", "FlatWing", "Aperture", "DoubleSlit"], "presets", {
     "Prism": ["radius", "rotation", "nSides", "width"],
     "FlatWing": ["chord", "rotation", "thickness", "width"],
-    "Aperture": ["shape", "radius", "invert", "barrierThickness"],
+    "Aperture": ["shape", "radius", "invert", "barrierThickness", "taperAngle"],
     "DoubleSlit": ["slitWidth", "slitSpacing", "slitHeight", "barrierThickness"],
   });
 

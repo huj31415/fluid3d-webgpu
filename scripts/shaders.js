@@ -1,11 +1,11 @@
-const initShaderCode = /* wgsl */`
+const initShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 
 // @group(0) @binding(0) var<uniform> uni: Uniforms;
-@group(0) @binding(1) var velOld:  texture_storage_3d<rgba32float, write>;
-@group(0) @binding(2) var velNew:  texture_storage_3d<rgba32float, write>;
-@group(0) @binding(3) var smokeOld:  texture_storage_3d<rg32float, write>;
-@group(0) @binding(4) var smokeNew:  texture_storage_3d<rg32float, write>;
+@group(0) @binding(1) var velOld:  texture_storage_3d<rgba${readOrWriteFormat}float, write>;
+@group(0) @binding(2) var velNew:  texture_storage_3d<rgba${readOrWriteFormat}float, write>;
+@group(0) @binding(3) var smokeOld:  texture_storage_3d<rg${readOrWriteFormat}float, write>;
+@group(0) @binding(4) var smokeNew:  texture_storage_3d<rg${readOrWriteFormat}float, write>;
 
 override WG_X: u32;
 override WG_Y: u32;
@@ -29,13 +29,13 @@ fn main(
 }
 `;
 
-const clearPressureRefreshSmokeShaderCode = /* wgsl */`
+const clearPressureRefreshSmokeShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 
 @group(0) @binding(0) var<uniform> uni: Uniforms;
-@group(0) @binding(1) var pressure:  texture_storage_3d<r32float, write>;
-@group(0) @binding(2) var smokeOld:  texture_storage_3d<rg32float, write>;
-@group(0) @binding(3) var smokeNew:  texture_storage_3d<rg32float, write>;
+@group(0) @binding(1) var pressure:  texture_storage_3d<r${readOrWriteFormat}float, write>;
+@group(0) @binding(2) var smokeOld:  texture_storage_3d<rg${readOrWriteFormat}float, write>;
+@group(0) @binding(3) var smokeNew:  texture_storage_3d<rg${readOrWriteFormat}float, write>;
 
 override WG_X: u32;
 override WG_Y: u32;
@@ -66,7 +66,7 @@ fn main(
 // 1 if barrier, 0 if open, 8 bits: unused,self,-x,+x,-y,+y,-z,+z
 // can use countOneBits to get number of barriers around cell if necessary
 // check barriers with mask & (1 << directionIndex)
-const barrierMaskShaderCode = /* wgsl */`
+const barrierMaskShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 
 // @group(0) @binding(0) var<uniform> uni: Uniforms;
@@ -105,16 +105,16 @@ fn main(
 
 // Advect velocity using semi-Lagrangian scheme (implement MacCormack later)
 // Advect smoke and add force based on temperature and pressure
-const advectionShaderCode = /* wgsl */`
+const advectionShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 
 @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var velOld:     texture_3d<f32>;
-@group(0) @binding(2) var velNew:     texture_storage_3d<rgba32float, write>;
+@group(0) @binding(2) var velNew:     texture_storage_3d<rgba${readOrWriteFormat}float, write>;
 @group(0) @binding(3) var barrierTex: texture_3d<f32>;
 @group(0) @binding(4) var linSampler: sampler;
 @group(0) @binding(5) var smokeOld:   texture_3d<f32>;
-@group(0) @binding(6) var smokeNew:   texture_storage_3d<rg32float, write>;
+@group(0) @binding(6) var smokeNew:   texture_storage_3d<rg${readOrWriteFormat}float, write>;
 
 override WG_X: u32;
 override WG_Y: u32;
@@ -170,13 +170,13 @@ fn main(
 `;
 
 // Compute divergence and curl of velocity field
-const velDivShaderCode = /* wgsl */`
+const velDivShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 
 @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var vel:  texture_3d<f32>;
-@group(0) @binding(2) var div:  texture_storage_3d<r32float, write>;
-@group(0) @binding(3) var curl: texture_storage_3d<rgba32float, write>;
+@group(0) @binding(2) var div:  texture_storage_3d<r${readOrWriteFormat}float, write>;
+@group(0) @binding(3) var curl: texture_storage_3d<rgba${readOrWriteFormat}float, write>;
 @group(0) @binding(4) var barrierMaskTex: texture_3d<u32>;
 
 override WG_X: u32;
@@ -246,7 +246,7 @@ fn main(
   // store divergence with dx = 1
   textureStore(div, gid, vec4f(divV * 0.5, 0, 0, 0));
   // store curl with dx = 1
-  if (all(gid < vec3u(uni.volSize) - vec3u(1)) && all(gid > vec3u(0))) {
+  if (uni.visMode == 5 && all(gid < vec3u(uni.volSize) - vec3u(1)) && all(gid > vec3u(0))) {
     textureStore(curl, gid, vec4f(curlV * 0.5, 0));
   }
 }
@@ -255,11 +255,11 @@ fn main(
 // Calculate pressure using pressure Poisson equation and red-black Gauss-Seidel iteration
 // Periodically zero pressure field after 50-100 frames or after significant updates
 // Merge with divergence shader?
-const pressureShaderCode = /* wgsl */`
+const pressureShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 @group(0) @binding(0) var<uniform> uni: Uniforms;
-@group(0) @binding(1) var velDiv:   texture_storage_3d<r32float, read>;
-@group(0) @binding(2) var pressure: texture_storage_3d<r32float, read_write>;
+@group(0) @binding(1) var velDiv:   texture_storage_3d<r${readOrWriteFormat}float, read>;
+@group(0) @binding(2) var pressure: texture_storage_3d<r${readAndWriteFormat}float, read_write>;
 @group(0) @binding(3) var barrierMaskTex:  texture_3d<u32>;
 
 const directions: array<vec3i, 6> = array<vec3i, 6>(
@@ -363,12 +363,12 @@ fn main(
 `;
 
 // Compute gradient of pressure field, then subtract from velocity
-const projectionShaderCode = /* wgsl */`
+const projectionShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 @group(0) @binding(0) var<uniform> uni: Uniforms;
-@group(0) @binding(1) var velOld:   texture_storage_3d<rgba32float, read>;
-@group(0) @binding(2) var velNew:   texture_storage_3d<rgba32float, write>;
-@group(0) @binding(3) var pressure: texture_storage_3d<r32float, read>;
+@group(0) @binding(1) var velOld:   texture_storage_3d<rgba${readOrWriteFormat}float, read>;
+@group(0) @binding(2) var velNew:   texture_storage_3d<rgba${readOrWriteFormat}float, write>;
+@group(0) @binding(3) var pressure: texture_storage_3d<r${readOrWriteFormat}float, read>;
 @group(0) @binding(4) var barrierMaskTex:  texture_3d<u32>;
 
 const directions: array<vec3i, 6> = array<vec3i, 6>(

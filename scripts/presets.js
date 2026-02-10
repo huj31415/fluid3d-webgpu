@@ -112,7 +112,7 @@ function flatWing(distance = presetXOffset, args = presetSettings.FlatWing) {
   for (let z = 0; z < simulationDomain[2] * args.width; z++) {
     for (let y = -halfHeight; y < halfHeight; y++) {
       for (let x = -halfLength; x < halfLength; x++) {
-        if (Math.abs(y - x * (-height / length)) <= args.thickness) {
+        if (Math.abs(y - x * (-height / length)) <= args.thickness) { // * (-(x + halfLength) / length + 2)) {
           barrierData[index3d(x + distance + Math.ceil(args.chord / 2), y + yMidpt, z)] = 0;
         }
       }
