@@ -105,7 +105,7 @@ fn main(
 
 // Advect velocity using semi-Lagrangian scheme (implement MacCormack later)
 // Advect smoke and add force based on temperature and pressure
-const advectionShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
+const semiLagrangianAdvectionShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 
 @group(0) @binding(0) var<uniform> uni: Uniforms;
@@ -161,6 +161,143 @@ fn main(
   newVel += vec4f(0, (temp - ambientTemp), 0, 0); // rho1 = mP/(1 + (t1 - t0)), F=(rho_surrounding - rho)*g*V
   if (gid.x > 0) {
     newSmoke.y = newSmoke.y - (temp - ambientTemp) * 0.001 * uni.dt; // equalize smoke temp with surroundings
+  }
+
+  // interpolate and advect velocity
+  textureStore(velNew, gid, newVel);
+  textureStore(smokeNew, gid, newSmoke);
+}
+`;
+
+// McCormack advection
+const mcAdvectionShaderCode1 = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
+${uni.uniformStruct}
+
+@group(0) @binding(0) var<uniform> uni: Uniforms;
+@group(0) @binding(1) var velOld:     texture_3d<f32>;
+@group(0) @binding(2) var velMid:     texture_storage_3d<rgba${readOrWriteFormat}float, write>;
+// @group(0) @binding(3) var barrierTex: texture_3d<f32>;
+@group(0) @binding(4) var linSampler: sampler;
+@group(0) @binding(5) var smokeOld:   texture_3d<f32>;
+@group(0) @binding(6) var smokeMid:   texture_storage_3d<rg${readOrWriteFormat}float, write>;
+
+override WG_X: u32;
+override WG_Y: u32;
+override WG_Z: u32;
+
+// Initial advection compute shader
+@compute @workgroup_size(WG_X, WG_Y, WG_Z)
+fn main(
+  @builtin(global_invocation_id) gid: vec3u
+) {
+  let gid_f = vec3f(gid);
+  // check if the index is within bounds
+  if (any(gid_f >= uni.volSize)) { return; }
+
+  // don't advect into barriers
+  // if (textureLoad(barrierTex, gid, 0).r == 0) {
+  //   textureStore(smokeNew, gid, vec4f(0,1,0,0)); // can modify to apply temperature to objects
+  //   return;
+  // }
+
+  var newVel = vec4f(uni.vInflow, 0, 0, 0);
+  let pastPos = gid_f - uni.dt * textureLoad(velOld, gid, 0).xyz;
+  let pastPosNorm = saturate((pastPos + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
+  let newSmoke = textureSampleLevel(smokeOld, linSampler, pastPosNorm, 0);
+
+  if (gid.x > 1 && gid.x < u32(uni.volSize.x) - 1) {
+    // reverse trace particle velocity
+    newVel = textureSampleLevel(velOld, linSampler, pastPosNorm, 0);
+  }
+
+  // interpolate and advect velocity
+  textureStore(velMid, gid, newVel);
+  textureStore(smokeMid, gid, newSmoke);
+}
+`;
+
+
+const mcAdvectionShaderCode2 = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
+${uni.uniformStruct}
+
+@group(0) @binding(0) var<uniform> uni: Uniforms;
+@group(0) @binding(1) var velOld:     texture_3d<f32>;
+@group(0) @binding(2) var velMid:     texture_3d<f32>;
+@group(0) @binding(3) var velNew:     texture_storage_3d<rgba${readOrWriteFormat}float, write>;
+@group(0) @binding(4) var barrierTex: texture_3d<f32>;
+@group(0) @binding(5) var linSampler: sampler;
+@group(0) @binding(6) var smokeOld:   texture_3d<f32>;
+@group(0) @binding(7) var smokeMid:   texture_3d<f32>;
+@group(0) @binding(8) var smokeNew:   texture_storage_3d<rg${readOrWriteFormat}float, write>;
+
+override WG_X: u32;
+override WG_Y: u32;
+override WG_Z: u32;
+
+fn advectStage2(midTex: texture_3d<f32>, oldTex: texture_3d<f32>, forwardPosNorm: vec3f, pastPos_u: vec3u, gid: vec3u) -> vec4f {
+  let newValue = textureLoad(midTex, gid, 0)
+    + 0.5 * (textureLoad(oldTex, gid, 0) - textureSampleLevel(midTex, linSampler, forwardPosNorm, 0));
+
+  let surroundingValues = array<vec4f, 8>(
+    textureLoad(oldTex, pastPos_u, 0),
+    textureLoad(oldTex, pastPos_u + vec3u(1,0,0), 0),
+    textureLoad(oldTex, pastPos_u + vec3u(0,1,0), 0),
+    textureLoad(oldTex, pastPos_u + vec3u(1,1,0), 0),
+    textureLoad(oldTex, pastPos_u + vec3u(0,0,1), 0),
+    textureLoad(oldTex, pastPos_u + vec3u(1,0,1), 0),
+    textureLoad(oldTex, pastPos_u + vec3u(0,1,1), 0),
+    textureLoad(oldTex, pastPos_u + vec3u(1,1,1), 0)
+  );
+  let clampMin = (
+    min(surroundingValues[0],
+    min(surroundingValues[1],
+    min(surroundingValues[2],
+    min(surroundingValues[3],
+    min(surroundingValues[4],
+    min(surroundingValues[5],
+    min(surroundingValues[6],
+    surroundingValues[7]
+  ))))))));
+  let clampMax = (
+    max(surroundingValues[0],
+    max(surroundingValues[1],
+    max(surroundingValues[2],
+    max(surroundingValues[3],
+    max(surroundingValues[4],
+    max(surroundingValues[5],
+    max(surroundingValues[6],
+    surroundingValues[7]
+  ))))))));
+
+  return vec4f(clamp(newValue, clampMin, clampMax));
+}
+
+// Correction compute shader
+@compute @workgroup_size(WG_X, WG_Y, WG_Z)
+fn main(
+  @builtin(global_invocation_id) gid: vec3u
+) {
+  let gid_f = vec3f(gid);
+  // check if the index is within bounds
+  if (any(gid_f >= uni.volSize)) { return; }
+
+  // don't advect into barriers
+  if (textureLoad(barrierTex, gid, 0).r == 0) {
+    textureStore(smokeNew, gid, vec4f(0,1,0,0));
+    return;
+  }
+
+  let vdt = uni.dt * textureLoad(velOld, gid, 0).xyz;
+  var newVel = vec4f(uni.vInflow, 0, 0, 0);
+  let pastPos = gid_f - vdt;
+  let pastPos_u = vec3u(floor(pastPos));
+
+  let forwardPos = gid_f + vdt;
+  let forwardPosNorm = saturate((forwardPos + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
+  var newSmoke = advectStage2(smokeMid, smokeOld, forwardPosNorm, pastPos_u, gid);
+
+  if (gid.x > 1 && gid.x < u32(uni.volSize.x) - 1) {
+    newVel = advectStage2(velMid, velOld, forwardPosNorm, pastPos_u, gid);
   }
 
   // interpolate and advect velocity
@@ -277,14 +414,14 @@ override WG_Y: u32;
 override WG_Z: u32;
 
 // 2 wide halo may have better stability
-var<workgroup> tile: array<f32, (WG_X + 2) * (WG_Y + 2) * (WG_Z + 2)>;
+var<workgroup> tile: array<f16, (WG_X + 2) * (WG_Y + 2) * (WG_Z + 2)>;
 
 fn tileIndex(idx: vec3i) -> u32 {
   let sidx = vec3u(idx + vec3i(1)); // shift by 1 for halo
   return sidx.x + (WG_X + 2u) * (sidx.y + (WG_Y + 2u) * sidx.z);
 }
 
-fn neighborSum(gid: vec3u, currentPressure: f32, barrierMask: u32, indices: array<u32, 6>) -> f32 {
+fn neighborSum(gid: vec3u, currentPressure: f16, barrierMask: u32, indices: array<u32, 6>) -> f16 {
   // let pressureXn = select(currentPressure, tile[indices[0]], (barrierMask & (1 << 0)) == 0);
   let pressureXn = select(currentPressure, select(tile[indices[0]], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 0)) == 0);
   // let pressureXp = select(currentPressure, select(tile[indices[1]], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 1)) == 0);
@@ -321,12 +458,12 @@ fn main(
     currentTileIndex + stride.z
   );
 
-  let pressureValue = textureLoad(pressure, gid_i).r;  
+  let pressureValue: f16 = f16(textureLoad(pressure, gid_i).r);  
   let barrierMask = textureLoad(barrierMaskTex, gid, 0).r;
   
-  let SORa = 1.0 - uni.SORomega;
-  let SORb = uni.SORomega / 6.0;
-  let rhs = textureLoad(velDiv, gid).r / uni.dt;
+  let SORa = f16(1.0 - uni.SORomega);
+  let SORb = f16(uni.SORomega / 6.0);
+  let rhs = f16(textureLoad(velDiv, gid).r / uni.dt);
 
   let isRed = ((gid.x + gid.y + gid.z) & 1u) == 0u;
 
@@ -338,7 +475,7 @@ fn main(
     let haloIdx = tileIndex(lid_i + dir);
     let g = gid_i + dir; // global neighbor index
     if (all(g >= vec3i(0)) && all(g < vec3i(uni.volSize))) {
-      tile[haloIdx] = textureLoad(pressure, g).r;
+      tile[haloIdx] = f16(textureLoad(pressure, g).r);
     } else {
       tile[haloIdx] = 0.0; // boundary condition (or mirror)
     }
@@ -348,17 +485,17 @@ fn main(
   // red-black Gauss-Seidel iteration with overrelaxation
   for (var i = 0; i < i32(uni.pressureLocalIter); i = i + 1) {
     if (isRed) {
-      let sum = neighborSum(gid, pressureValue, barrierMask, indices);
+      let sum: f16 = neighborSum(gid, pressureValue, barrierMask, indices);
       tile[currentTileIndex] = SORa * tile[currentTileIndex] + SORb * (sum - rhs);
     }
     workgroupBarrier();
     if (!isRed) {
-      let sum = neighborSum(gid, pressureValue, barrierMask, indices);
+      let sum: f16 = neighborSum(gid, pressureValue, barrierMask, indices);
       tile[currentTileIndex] = SORa * tile[currentTileIndex] + SORb * (sum - rhs);
     }
     workgroupBarrier();
   }
-  textureStore(pressure, gid, vec4f(tile[currentTileIndex], 0.0, 0.0, 0.0));
+  textureStore(pressure, gid, vec4(f32(tile[currentTileIndex]), 0.0, 0.0, 0.0));
 }
 `;
 
