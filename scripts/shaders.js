@@ -426,7 +426,7 @@ fn main(
   
   let SORa = f16(1.0 - uni.SORomega);
   let SORb = f16(uni.SORomega / 6.0);
-  let rhs = f16(textureLoad(velDiv, gid).r / uni.dt);
+  let rhs = f16(div / uni.dt);
 
   let isRed = ((gid.x + gid.y + gid.z) & 1u) == 0u;
 
@@ -591,6 +591,18 @@ fn linear2srgb(color: vec4f) -> vec4f {
   return vec4f(select(higher, lower, cutoff), color.a);
 }
 
+fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f) -> vec4f {
+  if (((u32(uni.options) & (1u << 2)) != 0)) {
+    let gradient = vec3f(
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).xyz),
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).xyz),
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).xyz)
+    );
+    return uni.ambientIntensity + vec4f(uni.lightColor, 0) * saturate(dot(-normalize(gradient + 1e-5), uni.lightDir));
+  }
+  return vec4f(uni.ambientIntensity);
+}
+
 @fragment
 fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
   // Convert fragment coordinates to normalized device coordinates
@@ -624,6 +636,8 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
   var color = vec4f(0);
 
   var remainingDist = intersection.y - t0;
+  
+  let unitVolSize = 1 / uni.volSize;
 
   loop {
     if (remainingDist <= 0.0) { break; }
@@ -636,23 +650,31 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
     remainingDist -= adjDt;
 
     // Sample barrier texture
-    let barrier = textureSampleLevel(barrierTexture, linSampler, samplePos, 0).r;
+    let barrier = textureSampleLevel(barrierTexture, linSampler, samplePos, 0).x; // 0 = barrier
 
     // Early exit on barrier
     if (barrier == 0.0 && (u32(uni.options) & 1u) == 1u) {
       // Barrier blend
-      color += vec4f((1.0 - color.a) * (1.0 - exp(-adjDt))); // Barrier color
+      if ((u32(uni.options) & (1u << 2)) != 0) {
+        let normal = -normalize(vec3f(
+          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).x,
+          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).x,
+          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).x
+        ));
+        color += vec4f((1.0 - color.a) * (1.0 - exp(-adjDt))) * 10 * (uni.ambientIntensity + vec4f(uni.lightColor, 0) * saturate(dot(-normal, uni.lightDir)));
+      } else {
+        color += vec4f((1.0 - color.a) * (1.0 - exp(-adjDt))); // Barrier color
+      }
       break;
     }
     // skip x boundaries to avoid inflow/outflow artifacts
-    let unitVolSize = 1 / uni.volSize.x;
-    if (uni.visMode > 0 && (samplePos.x < 4 * unitVolSize || samplePos.x > (uni.volSize.x - 4) * unitVolSize)) { continue; }
+    if (uni.visMode > 0 && (samplePos.x < 4 * unitVolSize.x || samplePos.x > (uni.volSize.x - 4) * unitVolSize.x)) { continue; }
 
     var sampleColor = vec4f(0);
     if (uni.visMode <= 2.0) { // 0: scalar-abs-bw, 1: scalar-color
       let sampleValue = uni.visMult * select(textureSampleLevel(stateTexture, stateSampler, samplePos, 0).x, textureSampleLevel(stateTexture, stateSampler, samplePos, 0).y - 1, uni.visMode == 2);//y-uni.smokeTemp; // scalar, also add option for y-1 for smoke temperature
       // Skip if empty and not a boundary
-      if (sampleValue == 0.0 && barrier == 1.0) {
+      if (sampleValue == 0.0 && barrier > 0.0) {
         continue;
       }
       let a = clamp(abs(sampleValue) * 0.01, 0, 0.01) * uni.globalAlpha;
@@ -665,25 +687,25 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       // isosurface
       if (((u32(uni.options) & (1u << 1)) != 0) && abs(sampleValue) >= uni.isoMin && abs(sampleValue) <= uni.isoMax) {
         sampleColor.a = 1.0;
-        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * vec4f(sampleColor.xyz, 1);
+        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * 2 * vec4f(sampleColor.xyz, 1) * gradientLighting(unitVolSize, samplePos);
         break;
       }
     } else { // 3: vel-xyz-color, 4: vel-mag-color, 5: curl-xyz-color
       // Sample state
       let sampleValue = uni.visMult * (textureSampleLevel(stateTexture, stateSampler, samplePos, 0).xyz - select(vec3f(0), vec3f(uni.vInflow / 2, 0, 0), uni.visMode < 5.0)); // free velocity half of vInflow?
       // Skip if empty and not a boundary
-      if (all(vec3f(sampleValue) == vec3f(0.0)) && barrier == 1.0) {
+      if (all(vec3f(sampleValue) == vec3f(0.0)) && barrier > 0.0) {
         continue;
       }
       let sampleMag = length(sampleValue);
       // transfer function
       let c = select(abs(sampleValue), vec3f(sampleMag), uni.visMode == 3.0);
-      sampleColor = 10 * saturate(vec4f(c, clamp(sampleMag * 0.01, 0, 0.01) * uni.globalAlpha));
+      sampleColor = 10 * saturate(vec4f(c, saturate(sampleMag) * 0.01 * uni.globalAlpha));
       
-      // isosurface
+      // isosurface rendering
       if (((u32(uni.options) & (1u << 1)) != 0) && sampleMag >= uni.isoMin && sampleMag <= uni.isoMax) {
         sampleColor.a = 1.0;
-        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * vec4f(sampleColor.xyz, 1);
+        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * vec4f(sampleColor.xyz, 1) * 2 * gradientLighting(unitVolSize, samplePos);
         break;
       }
     }

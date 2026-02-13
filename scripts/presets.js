@@ -9,9 +9,9 @@ const shapes = Object.freeze({
 
 const presetSettings = {
   DoubleSlit: { slitWidth: 8, slitSpacing: 32, slitHeight: 64 },
-  Aperture: { shape: shapes.circular, invert: false, taperAngle: (30).toRad() },
-  Prism: { n: 3, rot: (10).toRad(), width: 0.5 },
-  FlatWing: { chord: 64, thickness: 3, AoA: (20).toRad(), width: 0.5 },
+  Aperture: { shape: shapes.circular, invert: false, taperAngle: toRad(30) },
+  Prism: { n: 3, rot: toRad(10), width: 0.5 },
+  FlatWing: { chord: 64, thickness: 3, AoA: toRad(20), width: 0.5 },
 }
 
 /**

@@ -22,10 +22,16 @@ uni.addUniform("globalAlpha", "f32");     // global alpha multiplier
 uni.addUniform("smokeTemp", "f32");       // smoke temperature
 
 uni.addUniform("visMult", "f32");         // Field visualization multiplier
-uni.addUniform("options", "f32");         // u32 bit-packed options - bit 0: barrier rendering on/off, bit 1: isosurface rendering on/off
+uni.addUniform("options", "f32");         // u32 bit-packed options - bit 0: barrier rendering on/off, bit 1: isosurface rendering on/off, bit 2: lighting on/off
 uni.addUniform("isoMin", "f32");          // isosurface value
 uni.addUniform("isoMax", "f32");          // isosurface value
 
+uni.addUniform("lightDir", "vec3f");      // normalized directional light direction in world space
+uni.addUniform("ambientIntensity", "f32");// ambient light intensity
+
+uni.addUniform("lightColor", "vec3f");    // ambient light color * intensity
+
+// visMode, options, pressureLocalIter can be packed
 uni.finalize();
 
 const storage = {
@@ -66,12 +72,26 @@ let yMidpt = Math.floor(simulationDomain[1] / 2);
 let zMidpt = Math.floor(simulationDomain[2] / 2);
 
 const simulationDomainNorm = simulationDomain.map(v => v / Math.max(...simulationDomain));
-let barrierData = new Uint8Array(simulationDomain[0] * simulationDomain[1] * simulationDomain[2]).fill(1);
+let barrierData = new Uint8Array(simulationDomain[0] * simulationDomain[1] * simulationDomain[2]).fill(255);
 
 let cleared = false;
 
+let globalAlpha = 1;
+
 let smokePos = [yMidpt, zMidpt];
 const smokeHalfSize = [16, 8, 1];
+
+
+function sphericalToCartesian(azimuth, elevation, distance) {
+  const x = Math.cos(elevation) * Math.sin(azimuth);
+  const y = Math.sin(elevation);
+  const z = Math.cos(elevation) * Math.cos(azimuth);
+  return vec3.scale([x, y, z], distance);
+}
+let lightDir = vec3.normalize(sphericalToCartesian(toRad(45), toRad(45), 1));
+let lightIntensity = 5;
+let lightColor = vec3.fromValues(1, 1, 1);
+let ambientIntensity = 1;
 
 /**
  * Resizes the simulation domain
@@ -277,7 +297,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 
   gui.addNumericInput("radius", true, "Radius", { min: 0, max: 128, step: 1, val: sharedSettings.radius, float: 0 }, "presets", (value) => {sharedSettings.radius = value; autoUpdate(doAutoUpdate)});
 
-  gui.addNumericInput("rotation", true, "AoA/Rot", { min: -90, max: 90, step: 1, val: 20, float: 0 }, "presets", (value) => {presetSettings.Prism.rot = presetSettings.FlatWing.AoA = value.toRad(); autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("rotation", true, "AoA/Rot", { min: -90, max: 90, step: 1, val: 20, float: 0 }, "presets", (value) => {presetSettings.Prism.rot = presetSettings.FlatWing.AoA = toRad(value); autoUpdate(doAutoUpdate)});
   gui.addNumericInput("width", true, "Width", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "presets", (value) => {presetSettings.Prism.width = presetSettings.FlatWing.width = value; autoUpdate(doAutoUpdate)});
   gui.addRadioOptions("shape", ["circular", "square", "linear"], "circular", "presets", {}, (value) => {presetSettings.Aperture.shape = shapes[value]; autoUpdate(doAutoUpdate)});
   gui.addNumericInput("nSides", true, "n sides", { min: 3, max: 24, step: 1, val: 3, float: 0 }, "presets", (value) => {presetSettings.Prism.n = value; autoUpdate(doAutoUpdate)});
@@ -289,7 +309,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addNumericInput("slitSpacing", true, "Slit spacing", { min: 0, max: 512, step: 1, val: 32, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitSpacing = value; autoUpdate(doAutoUpdate)});
   gui.addNumericInput("slitHeight", true, "Slit height", { min: 0, max: 512, step: 1, val: 64, float: 0 }, "presets", (value) => {presetSettings.DoubleSlit.slitHeight = value; autoUpdate(doAutoUpdate)});
   
-  gui.addNumericInput("taperAngle", true, "Taper angle", { min: -60, max: 60, step: 1, val: -30, float: 0 }, "presets", (value) => {presetSettings.Aperture.taperAngle = -value.toRad(); autoUpdate(doAutoUpdate)});
+  gui.addNumericInput("taperAngle", true, "Taper angle", { min: -60, max: 60, step: 1, val: -30, float: 0 }, "presets", (value) => {presetSettings.Aperture.taperAngle = toRad(-value); autoUpdate(doAutoUpdate)});
   gui.addCheckbox("invert", "Invert barrier", false, "presets", (checked) => presetSettings.Aperture.invert = checked);
 
   gui.addNumericInput("barrierThickness", true, "Thickness", { min: 1, max: 16, step: 1, val: 16, float: 0 }, "presets", (value) => {barrierThickness = value; autoUpdate(doAutoUpdate)});
@@ -312,7 +332,10 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 // Visualization controls
 {
   gui.addGroup("visCtrl", "Visualization controls");
-  gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.globalAlpha.set([value]), "Global alpha multiplier");
+  gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0, max: 5, step: 0.1, val: globalAlpha, float: 1 }, "visCtrl", (value) => {
+    globalAlpha = value;
+    uni.values.globalAlpha.set([value]);
+  }, "Global alpha multiplier");
   gui.addNumericInput("rayDtMult", true, "Ray dt mult", { min: 0.1, max: 5, step: 0.1, val: 1.5, float: 1 }, "visCtrl", (value) => uni.values.rayDtMult.set([value]), "Raymarching step multipler; higher has better visual quality, lower has better performance");
   gui.addNumericInput("visMult", true, "Value multiplier", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.visMult.set([value]));
   gui.addCheckbox("showBarriers", "Show barriers", true, "visCtrl", (checked) => {
@@ -321,25 +344,69 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     uni.values.options.set([options]);
   });
   gui.addCheckbox("renderIsosurface", "Render isosurface", false, "visCtrl", (checked) => {
-    if (checked) options |= (1 << 1);
-    else options &= ~(1 << 1);
+    if (checked) {
+      options |= (1 << 1);
+      uni.values.globalAlpha.set([0]);
+      gui.io.globalAlpha.value = 0;
+    } else {
+      options &= ~(1 << 1);
+      uni.values.globalAlpha.set([globalAlpha]);
+      gui.io.globalAlpha.value = globalAlpha;
+    }
     uni.values.options.set([options]);
   });
-  gui.addNumericInput("isoMin", true, "Isosurface min", { min: 0.1, max: 0.6, step: 0.1, val: 0.5, float: 1 }, "visCtrl", (value) => {
+  gui.addNumericInput("isoMin", true, "Isosurface min", { min: 0.1, max: 0.5, step: 0.1, val: 0.5, float: 1 }, "visCtrl", (value) => {
     uni.values.isoMin.set([value]);
-    gui.io.isoMax.min = value;
-    if (gui.io.isoMax.value < value) {
-      uni.values.isoMax.set([value]);
-      gui.io.isoMax.value = value;
+    gui.io.isoMax.min = value + 0.1;
+    if (gui.io.isoMax.value < value + 0.1) {
+      uni.values.isoMax.set([value + 0.1]);
+      gui.io.isoMax.value = value + 0.1;
     }
   });
-  gui.addNumericInput("isoMax", true, "Isosurface max", { min: 0.5, max: 5, step: 0.1, val: 0.6, float: 1 }, "visCtrl", (value) => {
+  gui.addNumericInput("isoMax", true, "Isosurface max", { min: 0.6, max: 5, step: 0.1, val: 0.6, float: 1 }, "visCtrl", (value) => {
     uni.values.isoMax.set([value]);
-    gui.io.isoMin.max = value;
-    if (gui.io.isoMin.value > value) {
-      uni.values.isoMin.set([value]);
-      gui.io.isoMin.value = value;
+    gui.io.isoMin.max = value - 0.1;
+    if (gui.io.isoMin.value > value - 0.1) {
+      uni.values.isoMin.set([value - 0.1]);
+      gui.io.isoMin.value = value - 0.1;
     }
+  });
+}
+
+{
+  gui.addGroup("lightCtrl", "Lighting controls");
+  gui.addCheckbox("enableLighting", "Enable lighting", false, "lightCtrl", (checked) => {
+    if (checked) options |= (1 << 2);
+    else options &= ~(1 << 2);
+    uni.values.options.set([options]);
+  });
+  gui.addNumericInput("lightAzimuth", true, "Azimuth", { min: 0, max: 360, step: 1, val: 45, float: 0 }, "lightCtrl", (value) => {
+    lightDir = vec3.normalize(sphericalToCartesian(toRad(value), Math.asin(lightDir[1]), 1));
+    uni.values.lightDir.set(lightDir);
+  });
+  gui.addNumericInput("lightElevation", true, "Elevation", { min: -90, max: 90, step: 1, val: 45, float: 0 }, "lightCtrl", (value) => {
+    lightDir = vec3.normalize(sphericalToCartesian(Math.atan2(lightDir[0], lightDir[2]), toRad(value), 1));
+    uni.values.lightDir.set(lightDir);
+  });
+  gui.addNumericInput("lightIntensity", true, "Intensity", { min: 0, max: 10, step: 0.1, val: lightIntensity, float: 1 }, "lightCtrl", (value) => {
+    lightIntensity = value;
+    uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
+  });
+  gui.addNumericInput("lightColorR", true, "Red", { min: 0, max: 1, step: 0.01, val: lightColor[0], float: 2 }, "lightCtrl", (value) => {
+    lightColor[0] = value;
+    uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
+  });
+  gui.addNumericInput("lightColorG", true, "Green", { min: 0, max: 1, step: 0.01, val: lightColor[1], float: 2 }, "lightCtrl", (value) => {
+    lightColor[1] = value;
+    uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
+  });
+  gui.addNumericInput("lightColorB", true, "Blue", { min: 0, max: 1, step: 0.01, val: lightColor[2], float: 2 }, "lightCtrl", (value) => {
+    lightColor[2] = value;
+    uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
+  });
+  gui.addNumericInput("ambientIntensity", true, "Ambient", { min: 0, max: 10, step: 0.1, val: ambientIntensity, float: 1 }, "lightCtrl", (value) => {
+    ambientIntensity = value;
+    uni.values.ambientIntensity.set([ambientIntensity]);
   });
 }
 
@@ -391,26 +458,6 @@ window.onresize = window.onload = () => {
   uni.values.resolution.set([canvas.width, canvas.height]);
   gui.io.res([window.innerWidth, window.innerHeight]);
 };
-
-/**
- * Clamps a number between between specified values
- * @param {Number} min Lower bound to clamp
- * @param {Number} max Upper bound to clamp
- * @returns Original number clamped between min and max
- */
-Number.prototype.clamp = function (min, max) { return Math.max(min, Math.min(max, this)) };
-
-/**
- * Converts degrees to radians
- * @returns Degree value in radians
- */
-Number.prototype.toRad = function () { return this * Math.PI / 180; }
-
-/**
- * Converts radians to degrees
- * @returns Radian value in degrees
- */
-Number.prototype.toDeg = function () { return this / Math.PI * 180; }
 
 /**
  * Generates a random number within a range
