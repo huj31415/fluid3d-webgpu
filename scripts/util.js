@@ -70,7 +70,7 @@ let barrierData = new Uint8Array(simulationDomain[0] * simulationDomain[1] * sim
 
 let cleared = false;
 
-const smokePos = [yMidpt, zMidpt];
+let smokePos = [yMidpt, zMidpt];
 const smokeHalfSize = [16, 8, 1];
 
 /**
@@ -85,6 +85,8 @@ function resizeDomain(newSize) {
   yMidpt = Math.floor(simulationDomain[1] / 2);
   zMidpt = Math.floor(simulationDomain[2] / 2);
   camera.target = defaults.target = vec3.scale(simulationDomainNorm, 0.5);
+  smokePos = [yMidpt, zMidpt];
+  uni.values.smokePos.set(smokePos);
 }
 
 /**
