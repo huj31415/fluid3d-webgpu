@@ -224,34 +224,15 @@ texture-formats-tier1: ${textureTier1}
   const semiLagrangianAdvectComputeBindGroups = [
     semiLagrangianAdvectComputeBindGroup(storage.velTex0, storage.velTex1, storage.smokeTemp0, storage.smokeTemp1),
     semiLagrangianAdvectComputeBindGroup(storage.velTex0, storage.velTex1, storage.smokeTemp1, storage.smokeTemp0),
-    // advectComputeBindGroup(storage.velTex1, storage.velTex0)
+    // maccormack advection stage 1
+    semiLagrangianAdvectComputeBindGroup(storage.velTex0, storage.velTexM, storage.smokeTemp0, storage.smokeTempM),
+    semiLagrangianAdvectComputeBindGroup(storage.velTex0, storage.velTexM, storage.smokeTemp1, storage.smokeTempM)
   ];
 
-  const mcAdvectComputePipeline1 = newComputePipeline(mcAdvectionShaderCode1, "mcAdvection1");
+  const mcAdvectComputePipeline = newComputePipeline(mcAdvectionShaderCode2, "mcAdvection2");
 
-  const mcAdvectComputeBindGroup1 = (velTexOld, smokeTexOld) => device.createBindGroup({
-    layout: mcAdvectComputePipeline1.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniformBuffer } },
-      { binding: 1, resource: velTexOld.createView() },
-      { binding: 2, resource: storage.velTexM.createView() },
-      // { binding: 3, resource: storage.barrierTex.createView() },
-      { binding: 4, resource: linSampler },
-      { binding: 5, resource: smokeTexOld.createView() },
-      { binding: 6, resource: storage.smokeTempM.createView() },
-    ],
-    label: "mcAdvect1 compute bind group"
-  });
-
-  const mcAdvectComputeBindGroups1 = [
-    mcAdvectComputeBindGroup1(storage.velTex0, storage.smokeTemp0),
-    mcAdvectComputeBindGroup1(storage.velTex0, storage.smokeTemp1),
-  ]
-
-  const mcAdvectComputePipeline2 = newComputePipeline(mcAdvectionShaderCode2, "mcAdvection2");
-
-  const mcAdvectComputeBindGroup2 = (velTexOld, velTexNew, smokeTexOld, smokeTexNew) => device.createBindGroup({
-    layout: mcAdvectComputePipeline2.getBindGroupLayout(0),
+  const mcAdvectComputeBindGroup = (velTexOld, velTexNew, smokeTexOld, smokeTexNew) => device.createBindGroup({
+    layout: mcAdvectComputePipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: uniformBuffer } },
       { binding: 1, resource: velTexOld.createView() },
@@ -266,9 +247,9 @@ texture-formats-tier1: ${textureTier1}
     label: "mcAdvect2 compute bind group"
   });
 
-  const mcAdvectComputeBindGroups2 = [
-    mcAdvectComputeBindGroup2(storage.velTex0, storage.velTex1, storage.smokeTemp0, storage.smokeTemp1),
-    mcAdvectComputeBindGroup2(storage.velTex0, storage.velTex1, storage.smokeTemp1, storage.smokeTemp0),
+  const mcAdvectComputeBindGroups = [
+    mcAdvectComputeBindGroup(storage.velTex0, storage.velTex1, storage.smokeTemp0, storage.smokeTemp1),
+    mcAdvectComputeBindGroup(storage.velTex0, storage.velTex1, storage.smokeTemp1, storage.smokeTemp0),
   ]
 
   const velDivComputePipeline = newComputePipeline(velDivShaderCode, "velocity divergence");
@@ -454,8 +435,8 @@ texture-formats-tier1: ${textureTier1}
 
       switch (advectionMode) {
         case 0:
-          createComputePass(encoder.beginComputePass(), mcAdvectComputePipeline1, mcAdvectComputeBindGroups1[pingPongIndex]);
-          createComputePass(advectionComputeTimingHelper.beginComputePass(encoder), mcAdvectComputePipeline2, mcAdvectComputeBindGroups2[pingPongIndex]);
+          createComputePass(encoder.beginComputePass(), semiLagrangianAdvectComputePipeline, semiLagrangianAdvectComputeBindGroups[pingPongIndex + 2]);
+          createComputePass(advectionComputeTimingHelper.beginComputePass(encoder), mcAdvectComputePipeline, mcAdvectComputeBindGroups[pingPongIndex]);
           break;
         case 1:
           createComputePass(advectionComputeTimingHelper.beginComputePass(encoder), semiLagrangianAdvectComputePipeline, semiLagrangianAdvectComputeBindGroups[pingPongIndex]);

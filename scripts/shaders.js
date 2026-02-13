@@ -103,7 +103,7 @@ fn main(
 }
 `;
 
-// Advect velocity using semi-Lagrangian scheme (implement MacCormack later)
+// Advect velocity using semi-Lagrangian scheme (also stage 1 of maccormack)
 // Advect smoke and add force based on temperature and pressure
 const semiLagrangianAdvectionShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
@@ -168,54 +168,6 @@ fn main(
   textureStore(smokeNew, gid, newSmoke);
 }
 `;
-
-// McCormack advection
-const mcAdvectionShaderCode1 = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
-${uni.uniformStruct}
-
-@group(0) @binding(0) var<uniform> uni: Uniforms;
-@group(0) @binding(1) var velOld:     texture_3d<f32>;
-@group(0) @binding(2) var velMid:     texture_storage_3d<rgba${readOrWriteFormat}float, write>;
-// @group(0) @binding(3) var barrierTex: texture_3d<f32>;
-@group(0) @binding(4) var linSampler: sampler;
-@group(0) @binding(5) var smokeOld:   texture_3d<f32>;
-@group(0) @binding(6) var smokeMid:   texture_storage_3d<rg${readOrWriteFormat}float, write>;
-
-override WG_X: u32;
-override WG_Y: u32;
-override WG_Z: u32;
-
-// Initial advection compute shader
-@compute @workgroup_size(WG_X, WG_Y, WG_Z)
-fn main(
-  @builtin(global_invocation_id) gid: vec3u
-) {
-  let gid_f = vec3f(gid);
-  // check if the index is within bounds
-  if (any(gid_f >= uni.volSize)) { return; }
-
-  // don't advect into barriers
-  // if (textureLoad(barrierTex, gid, 0).r == 0) {
-  //   textureStore(smokeNew, gid, vec4f(0,1,0,0)); // can modify to apply temperature to objects
-  //   return;
-  // }
-
-  var newVel = vec4f(uni.vInflow, 0, 0, 0);
-  let pastPos = gid_f - uni.dt * textureLoad(velOld, gid, 0).xyz;
-  let pastPosNorm = saturate((pastPos + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
-  let newSmoke = textureSampleLevel(smokeOld, linSampler, pastPosNorm, 0);
-
-  if (gid.x > 1 && gid.x < u32(uni.volSize.x) - 1) {
-    // reverse trace particle velocity
-    newVel = textureSampleLevel(velOld, linSampler, pastPosNorm, 0);
-  }
-
-  // interpolate and advect velocity
-  textureStore(velMid, gid, newVel);
-  textureStore(smokeMid, gid, newSmoke);
-}
-`;
-
 
 const mcAdvectionShaderCode2 = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
