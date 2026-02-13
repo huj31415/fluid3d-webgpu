@@ -22,7 +22,9 @@ uni.addUniform("globalAlpha", "f32");     // global alpha multiplier
 uni.addUniform("smokeTemp", "f32");       // smoke temperature
 
 uni.addUniform("visMult", "f32");         // Field visualization multiplier
-uni.addUniform("options", "f32");         // u32 bit-packed options - bit 0: barrier rendering on/off
+uni.addUniform("options", "f32");         // u32 bit-packed options - bit 0: barrier rendering on/off, bit 1: isosurface rendering on/off
+uni.addUniform("isoMin", "f32");          // isosurface value
+uni.addUniform("isoMax", "f32");          // isosurface value
 
 uni.finalize();
 
@@ -309,12 +311,33 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 {
   gui.addGroup("visCtrl", "Visualization controls");
   gui.addNumericInput("globalAlpha", true, "Global alpha", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.globalAlpha.set([value]), "Global alpha multiplier");
-  gui.addNumericInput("rayDtMult", true, "Ray dt mult", { min: 0.1, max: 5, step: 0.1, val: 2, float: 1 }, "visCtrl", (value) => uni.values.rayDtMult.set([value]), "Raymarching step multipler; higher has better visual quality, lower has better performance");
+  gui.addNumericInput("rayDtMult", true, "Ray dt mult", { min: 0.1, max: 5, step: 0.1, val: 1.5, float: 1 }, "visCtrl", (value) => uni.values.rayDtMult.set([value]), "Raymarching step multipler; higher has better visual quality, lower has better performance");
   gui.addNumericInput("visMult", true, "Value multiplier", { min: 0.1, max: 5, step: 0.1, val: 1, float: 1 }, "visCtrl", (value) => uni.values.visMult.set([value]));
   gui.addCheckbox("showBarriers", "Show barriers", true, "visCtrl", (checked) => {
     if (checked) options |= 1;
     else options &= ~1;
     uni.values.options.set([options]);
+  });
+  gui.addCheckbox("renderIsosurface", "Render isosurface", false, "visCtrl", (checked) => {
+    if (checked) options |= (1 << 1);
+    else options &= ~(1 << 1);
+    uni.values.options.set([options]);
+  });
+  gui.addNumericInput("isoMin", true, "Isosurface min", { min: 0.1, max: 0.6, step: 0.1, val: 0.5, float: 1 }, "visCtrl", (value) => {
+    uni.values.isoMin.set([value]);
+    gui.io.isoMax.min = value;
+    if (gui.io.isoMax.value < value) {
+      uni.values.isoMax.set([value]);
+      gui.io.isoMax.value = value;
+    }
+  });
+  gui.addNumericInput("isoMax", true, "Isosurface max", { min: 0.5, max: 5, step: 0.1, val: 0.6, float: 1 }, "visCtrl", (value) => {
+    uni.values.isoMax.set([value]);
+    gui.io.isoMin.max = value;
+    if (gui.io.isoMin.value > value) {
+      uni.values.isoMin.set([value]);
+      gui.io.isoMin.value = value;
+    }
   });
 }
 

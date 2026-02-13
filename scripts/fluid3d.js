@@ -525,7 +525,9 @@ uni.values.smokeTemp.set([1]);
 uni.values.options.set([options]);
 uni.values.pressureLocalIter.set([4]); // 2-8 typical, 2-4 best according to chatgpt
 uni.values.globalAlpha.set([1]);
-uni.values.rayDtMult.set([2]);
+uni.values.rayDtMult.set([1.5]);
 uni.values.visMult.set([1]);
+uni.values.isoMin.set([0.5]);
+uni.values.isoMax.set([0.6]);
 
 main().then(() => refreshPreset(false));

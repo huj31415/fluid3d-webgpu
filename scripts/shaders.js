@@ -681,6 +681,9 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       color += vec4f((1.0 - color.a) * (1.0 - exp(-adjDt))); // Barrier color
       break;
     }
+    // skip x boundaries to avoid inflow/outflow artifacts
+    let unitVolSize = 1 / uni.volSize.x;
+    if (uni.visMode > 0 && (samplePos.x < 4 * unitVolSize || samplePos.x > (uni.volSize.x - 4) * unitVolSize)) { continue; }
 
     var sampleColor = vec4f(0);
     if (uni.visMode <= 2.0) { // 0: scalar-abs-bw, 1: scalar-color
@@ -695,6 +698,13 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       } else {
         sampleColor = 10 * saturate(vec4f(sampleValue, (sampleValue - 1) * 0.5, -sampleValue, a));
       }
+
+      // isosurface
+      if (((u32(uni.options) & (1u << 1)) != 0) && abs(sampleValue) >= uni.isoMin && abs(sampleValue) <= uni.isoMax) {
+        sampleColor.a = 1.0;
+        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * vec4f(sampleColor.xyz, 1);
+        break;
+      }
     } else { // 3: vel-xyz-color, 4: vel-mag-color, 5: curl-xyz-color
       // Sample state
       let sampleValue = uni.visMult * (textureSampleLevel(stateTexture, stateSampler, samplePos, 0).xyz - select(vec3f(0), vec3f(uni.vInflow / 2, 0, 0), uni.visMode < 5.0)); // free velocity half of vInflow?
@@ -702,18 +712,26 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       if (all(vec3f(sampleValue) == vec3f(0.0)) && barrier == 1.0) {
         continue;
       }
+      let sampleMag = length(sampleValue);
       // transfer function
-      let c = select(abs(sampleValue), vec3f(length(sampleValue)), uni.visMode == 3.0);
-      sampleColor = 10 * saturate(vec4f(c, clamp(length(sampleValue) * 0.01, 0, 0.01) * uni.globalAlpha));
+      let c = select(abs(sampleValue), vec3f(sampleMag), uni.visMode == 3.0);
+      sampleColor = 10 * saturate(vec4f(c, clamp(sampleMag * 0.01, 0, 0.01) * uni.globalAlpha));
+      
+      // isosurface
+      if (((u32(uni.options) & (1u << 1)) != 0) && sampleMag >= uni.isoMin && sampleMag <= uni.isoMax) {
+        sampleColor.a = 1.0;
+        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * vec4f(sampleColor.xyz, 1);
+        break;
+      }
     }
 
     // Exponential blending
     color += (1.0 - color.a) * (1.0 - exp(-sampleColor.a * adjDt)) * vec4f(sampleColor.xyz, 1);
 
     // Exit if nearly opaque
-    // if (color.a >= 0.95) {
-    //   break;
-    // }
+    if (color.a >= 0.95) {
+      break;
+    }
   }
   return linear2srgb(color);
 }
