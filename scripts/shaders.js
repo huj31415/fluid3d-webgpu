@@ -243,13 +243,24 @@ fn main(
   var newVel = vec4f(uni.vInflow, 0, 0, 0);
   let pastPos = gid_f - vdt;
   let pastPos_u = vec3u(floor(pastPos));
+  var newSmoke = vec4f(0,1,0,0);
 
-  let forwardPos = gid_f + vdt;
-  let forwardPosNorm = saturate((forwardPos + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
-  var newSmoke = advectStage2(smokeMid, smokeOld, forwardPosNorm, pastPos_u, gid);
+  let advectVel = gid.x > 1 && gid.x < u32(uni.volSize.x) - 1;
 
-  if (gid.x > 1 && gid.x < u32(uni.volSize.x) - 1) {
-    newVel = advectStage2(velMid, velOld, forwardPosNorm, pastPos_u, gid);
+  if (all(vdt < vec3f(0.1))) {
+    // skip correction if velocity is very small to avoid precision issues
+    if (advectVel) {
+      newVel = textureLoad(velMid, gid, 0);
+    }
+    newSmoke = textureLoad(smokeMid, gid, 0);
+  } else {
+    let forwardPos = gid_f + vdt;
+    let forwardPosNorm = saturate((forwardPos + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
+    newSmoke = advectStage2(smokeMid, smokeOld, forwardPosNorm, pastPos_u, gid);
+
+    if (advectVel) {
+      newVel = advectStage2(velMid, velOld, forwardPosNorm, pastPos_u, gid);
+    }
   }
 
   // interpolate and advect velocity
