@@ -384,15 +384,15 @@ fn tileIndex(idx: vec3i) -> u32 {
   return sidx.x + (WG_X + 2u) * (sidx.y + (WG_Y + 2u) * sidx.z);
 }
 
-fn neighborSum(gid: vec3u, currentPressure: f16, barrierMask: u32, indices: array<u32, 6>) -> f16 {
-  // let pressureXn = select(currentPressure, tile[indices[0]], (barrierMask & (1 << 0)) == 0);
-  let pressureXn = select(currentPressure, select(tile[indices[0]], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 0)) == 0);
-  // let pressureXp = select(currentPressure, select(tile[indices[1]], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 1)) == 0);
-  let pressureXp = select(currentPressure, tile[indices[1]], (barrierMask & (1 << 1)) == 0);
-  let pressureYn = select(currentPressure, tile[indices[2]], (barrierMask & (1 << 2)) == 0);
-  let pressureYp = select(currentPressure, tile[indices[3]], (barrierMask & (1 << 3)) == 0);
-  let pressureZn = select(currentPressure, tile[indices[4]], (barrierMask & (1 << 4)) == 0);
-  let pressureZp = select(currentPressure, tile[indices[5]], (barrierMask & (1 << 5)) == 0);
+fn neighborSum(gid: vec3u, currentPressure: f16, barrierMask: u32, currentTileIndex: u32, stride: vec3u) -> f16 {
+  // let pressureXn = select(currentPressure, tile[currentTileIndex - stride.x], (barrierMask & (1 << 0)) == 0);
+  let pressureXn = select(currentPressure, select(tile[currentTileIndex - stride.x], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 0)) == 0);
+  // let pressureXp = select(currentPressure, select(tile[currentTileIndex + stride.x], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 1)) == 0);
+  let pressureXp = select(currentPressure, tile[currentTileIndex + stride.x], (barrierMask & (1 << 1)) == 0);
+  let pressureYn = select(currentPressure, tile[currentTileIndex - stride.y], (barrierMask & (1 << 2)) == 0);
+  let pressureYp = select(currentPressure, tile[currentTileIndex + stride.y], (barrierMask & (1 << 3)) == 0);
+  let pressureZn = select(currentPressure, tile[currentTileIndex - stride.z], (barrierMask & (1 << 4)) == 0);
+  let pressureZp = select(currentPressure, tile[currentTileIndex + stride.z], (barrierMask & (1 << 5)) == 0);
 
   return pressureXp + pressureXn + pressureYp + pressureYn + pressureZp + pressureZn;
 }
@@ -412,15 +412,6 @@ fn main(
   let stride = vec3u(1, WG_X + 2, (WG_X + 2) * (WG_Y + 2));
   let currentTileIndex = tileIndex(lid_i);
 
-  let indices = array<u32, 6>(
-    currentTileIndex - stride.x,
-    currentTileIndex + stride.x,
-    currentTileIndex - stride.y,
-    currentTileIndex + stride.y,
-    currentTileIndex - stride.z,
-    currentTileIndex + stride.z
-  );
-
   let pressureValue: f16 = f16(textureLoad(pressure, gid_i).r);  
   let barrierMask = textureLoad(barrierMaskTex, gid, 0).r;
   
@@ -433,27 +424,49 @@ fn main(
   // load into shared memory
   tile[currentTileIndex] = pressureValue;
 
-  for (var d = 0; d < 6; d = d + 1) {
-    let dir = directions[d];
-    let haloIdx = tileIndex(lid_i + dir);
-    let g = gid_i + dir; // global neighbor index
-    if (all(g >= vec3i(0)) && all(g < vec3i(uni.volSize))) {
-      tile[haloIdx] = f16(textureLoad(pressure, g).r);
-    } else {
-      tile[haloIdx] = 0.0; // boundary condition (or mirror)
-    }
+  // for (var d = 0; d < 6; d = d + 1) {
+  //   let dir = directions[d];
+  //   let haloIdx = tileIndex(lid_i + dir);
+  //   let g = gid_i + dir; // global neighbor index
+  //   if (all(g >= vec3i(0)) && all(g < vec3i(uni.volSize))) {
+  //     tile[haloIdx] = f16(textureLoad(pressure, g).r);
+  //   } else {
+  //     tile[haloIdx] = 0.0; // boundary condition (or mirror)
+  //   }
+  // }
+  if (lid.x == 0u) {
+    tile[tileIndex(lid_i + vec3i(-1, 0, 0))] = f16(textureLoad(pressure, gid_i + vec3i(-1, 0, 0)).r); 
+  }
+  if (lid.x == WG_X - 1u) {
+    tile[tileIndex(lid_i + vec3i(1, 0, 0))] = f16(textureLoad(pressure, gid_i + vec3i(1, 0, 0)).r);
+  }
+
+  // Check Y-axis halos
+  if (lid.y == 0u) {
+    tile[tileIndex(lid_i + vec3i(0, -1, 0))] = f16(textureLoad(pressure, gid_i + vec3i(0, -1, 0)).r);
+  }
+  if (lid.y == WG_Y - 1u) {
+    tile[tileIndex(lid_i + vec3i(0, 1, 0))] = f16(textureLoad(pressure, gid_i + vec3i(0, 1, 0)).r);
+  }
+
+  // Check Z-axis halos
+  if (lid.z == 0u) {
+    tile[tileIndex(lid_i + vec3i(0, 0, -1))] = f16(textureLoad(pressure, gid_i + vec3i(0, 0, -1)).r);
+  }
+  if (lid.z == WG_Z - 1u) {
+    tile[tileIndex(lid_i + vec3i(0, 0, 1))] = f16(textureLoad(pressure, gid_i + vec3i(0, 0, 1)).r);
   }
   workgroupBarrier();
 
   // red-black Gauss-Seidel iteration with overrelaxation
   for (var i = 0; i < i32(uni.pressureLocalIter); i = i + 1) {
     if (isRed) {
-      let sum: f16 = neighborSum(gid, pressureValue, barrierMask, indices);
+      let sum: f16 = neighborSum(gid, pressureValue, barrierMask, currentTileIndex, stride);
       tile[currentTileIndex] = SORa * tile[currentTileIndex] + SORb * (sum - rhs);
     }
     workgroupBarrier();
     if (!isRed) {
-      let sum: f16 = neighborSum(gid, pressureValue, barrierMask, indices);
+      let sum: f16 = neighborSum(gid, pressureValue, barrierMask, currentTileIndex, stride);
       tile[currentTileIndex] = SORa * tile[currentTileIndex] + SORb * (sum - rhs);
     }
     workgroupBarrier();
@@ -591,14 +604,15 @@ fn linear2srgb(color: vec4f) -> vec4f {
   return vec4f(select(higher, lower, cutoff), color.a);
 }
 
-fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f) -> vec4f {
+fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f, rayDir: vec3f) -> vec4f {
   if (((u32(uni.options) & (1u << 2)) != 0)) {
-    let gradient = vec3f(
+    // let h = normalize(uni.lightDir + rayDir);
+    let normal = -normalize(vec3f(
       length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).xyz),
       length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).xyz),
       length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).xyz)
-    );
-    return uni.ambientIntensity + vec4f(uni.lightColor, 0) * saturate(dot(-normalize(gradient + 1e-5), uni.lightDir));
+    ) + 1e-5);
+    return uni.ambientIntensity + vec4f(uni.lightColor, 0) * (saturate(dot(normal, uni.lightDir)));// + 100* pow(saturate(dot(h, normal)), 16));
   }
   return vec4f(uni.ambientIntensity);
 }
@@ -687,7 +701,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       // isosurface
       if (((u32(uni.options) & (1u << 1)) != 0) && abs(sampleValue) >= uni.isoMin && abs(sampleValue) <= uni.isoMax) {
         sampleColor.a = 1.0;
-        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * 2 * vec4f(sampleColor.xyz, 1) * gradientLighting(unitVolSize, samplePos);
+        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * 2 * vec4f(sampleColor.xyz, 1) * gradientLighting(unitVolSize, samplePos, rayDir);
         break;
       }
     } else { // 3: vel-xyz-color, 4: vel-mag-color, 5: curl-xyz-color
@@ -705,7 +719,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       // isosurface rendering
       if (((u32(uni.options) & (1u << 1)) != 0) && sampleMag >= uni.isoMin && sampleMag <= uni.isoMax) {
         sampleColor.a = 1.0;
-        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * vec4f(sampleColor.xyz, 1) * 2 * gradientLighting(unitVolSize, samplePos);
+        color += (1.0 - color.a) * (1.0 - exp(-adjDt)) * vec4f(sampleColor.xyz, 1) * 2 * gradientLighting(unitVolSize, samplePos, rayDir);
         break;
       }
     }

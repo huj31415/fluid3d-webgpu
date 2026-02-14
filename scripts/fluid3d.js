@@ -508,7 +508,7 @@ camera.target = defaults.target = vec3.scale(simulationDomainNorm, 0.5);
 uni.values.vInflow.set([2]);
 uni.values.smokeTemp.set([1]);
 uni.values.options.set([options]);
-uni.values.pressureLocalIter.set([4]); // 2-8 typical, 2-4 best according to chatgpt
+uni.values.pressureLocalIter.set([1]); // 2-8 typical, 2-4 best according to chatgpt
 uni.values.globalAlpha.set([globalAlpha]);
 uni.values.rayDtMult.set([1.5]);
 uni.values.visMult.set([1]);

@@ -238,7 +238,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     }
   });
   gui.addNumericInput("pressureGlobalIter", true, "Press. global iter", { min: 2, max: 16, step: 1, val: pressureGlobalIter, float: 0 }, "simCtrl", (value) => pressureGlobalIterTemp = value, "Global pressure solver iterations per frame");
-  gui.addNumericInput("pressureLocalIter", true, "Press. local iter", { min: 1, max: 16, step: 1, val: 4, float: 0 }, "simCtrl", (value) => uni.values.pressureLocalIter.set([value]), "Local pressure solver iterations per global iter.");
+  gui.addNumericInput("pressureLocalIter", true, "Press. local iter", { min: 1, max: 16, step: 1, val: 1, float: 0 }, "simCtrl", (value) => uni.values.pressureLocalIter.set([value]), "Local pressure solver iterations per global iter.");
   gui.addButton("toggleSim", "Play / Pause", false, "simCtrl", () => {
     if (oldDt) {
       dt = oldDt;
