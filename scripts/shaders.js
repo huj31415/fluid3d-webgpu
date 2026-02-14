@@ -597,7 +597,7 @@ fn linear2srgb(color: vec4f) -> vec4f {
   return vec4f(select(higher, lower, cutoff), color.a);
 }
 
-fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f, rayDir: vec3f) -> vec4f {
+fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f) -> vec4f {
   if (((u32(uni.options) & (1u << 2)) != 0)) {
     // let h = normalize(uni.lightDir + rayDir);
     let normal = -normalize(vec3f(
@@ -610,8 +610,16 @@ fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f, rayDir: vec3f) -> vec4
   return vec4f(uni.ambientIntensity);
 }
 
+fn henyeyGreenstein(g: f32, cosTheta: f32) -> f32 {
+  let g2 = g * g;
+  let denom = 1.0 + g2 - 2.0 * g * cosTheta;
+  return (1.0 / (4.0 * 3.14159)) * (1.0 - g2) / (denom * sqrt(denom));
+}
+
 @fragment
 fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
+  let enableLighting = (u32(uni.options) & (1u << 2)) != 0;
+
   // Convert fragment coordinates to normalized device coordinates
   let fragNdc = fragCoord / uni.resolution * 2.0 - 1.0;
 
@@ -625,10 +633,18 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
   let intersection = rayBoxIntersect(rayOrigin, rayDir);
 
-  // discard if ray does not intersect the box
+  let cosTheta = dot(rayDir, uni.lightDir);
+  let phase = henyeyGreenstein(0.6, cosTheta);
+
+  // ray start position offset
+  let offset = pcgHash(fragCoord.x + uni.resolution.x * fragCoord.y);
+
+  // simple gradient towards light direction if ray does not intersect the box
   if (intersection.x > intersection.y || intersection.y <= 0.0) {
     // discard;
-    return vec4f(0.1);
+    return vec4f(0.1 * (1 + f32(enableLighting) * (cosTheta + 0.1 * offset)));
+    // + smoothstep(0.9999, 1, cosTheta); // draw light
+    // return vec4f(0.1 * (1 + phase + 0.1 * offset));
   }
 
   let t0 = max(intersection.x, 0.0);
@@ -636,8 +652,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
   let rayDtVec = 1.0 / (uni.volSize * abs(rayDir));
   let rayDt = uni.rayDtMult * min(rayDtVec.x, min(rayDtVec.y, rayDtVec.z));
 
-  let offset = pcgHash(fragCoord.x + uni.resolution.x * fragCoord.y) * rayDt;
-  var rayPos = (rayOrigin + (t0 + offset) * rayDir) / uni.volSizeNorm;
+  var rayPos = (rayOrigin + (t0 + offset * rayDt) * rayDir) / uni.volSizeNorm;
   let rayDirNorm = rayDir / uni.volSizeNorm;
 
   var color = vec4f(0);
@@ -664,13 +679,13 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
     // Early exit on barrier
     if (barrier < 0.5 && (u32(uni.options) & 1u) == 1u) {
       // Barrier blend
-      if ((u32(uni.options) & (1u << 2)) != 0) {
+      if (enableLighting) {
         let normal = -normalize(vec3f(
           textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).x,
           textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).x,
           textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).x
         ));
-        color += blendFactor * 10 * (uni.ambientIntensity + vec4f(uni.lightColor, 0) * saturate(dot(-normal, uni.lightDir)));
+        color += blendFactor * 2 * (uni.ambientIntensity + vec4f(uni.lightColor, 0) * saturate(dot(-normal, uni.lightDir)));
       } else {
         color += blendFactor; // Barrier color
       }
@@ -689,10 +704,39 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       // Skip if empty and not a boundary
       if (sampleValue == 0.0 && barrier > 0.0) { continue; }
 
-      let a = clamp(abs(sampleValue) * 0.01, 0, 0.01) * uni.globalAlpha;
+      let a = saturate(abs(sampleValue)) * 0.01 * uni.globalAlpha;
 
       if (uni.visMode == 0.0) {
-        sampleColor = 10 * saturate(abs(vec4f(sampleValue, sampleValue, sampleValue, a)));
+        if (enableLighting) {
+          // march toward light for shading
+          var transparency = 1.0;
+
+          var remainingLightDist = rayBoxIntersect(samplePos * uni.volSizeNorm, uni.lightDir).y;
+          let lightDtVec = 1.0 / (uni.volSize * abs(uni.lightDir));
+          let lightDt = uni.rayDtMult * 2 * min(lightDtVec.x, min(lightDtVec.y, lightDtVec.z));
+
+          var lightPos = samplePos;
+          var i = 0;
+          loop {
+            lightPos += uni.lightDir * lightDt;
+            remainingLightDist -= lightDt;
+
+            if (transparency < 0.01 || remainingLightDist <= 0) { break; }
+            let lightBarrier = textureSampleLevel(barrierTexture, linSampler, lightPos, 0).x;
+            if (lightBarrier < 0.5) {
+              transparency = 0;
+              break;
+            }
+            let lightSample = textureSampleLevel(stateTexture, stateSampler, lightPos, 0).x;
+            if (lightSample < 0.01) { continue; }
+
+            transparency *= exp(-lightDt * 10 * lightSample); // light absorption by samples
+          }
+          let sampleLighting = 2 * vec3f(sampleValue) * (uni.ambientIntensity + 10 * vec3f(uni.lightColor) * transparency * phase);
+          sampleColor = abs(vec4f(sampleLighting, 10 * a));
+        } else {
+          sampleColor = saturate(abs(vec4f(sampleValue, sampleValue, sampleValue, a))) * 10;
+        }
       } else {
         sampleColor = 10 * saturate(vec4f(sampleValue, (sampleValue - 1) * 0.5, -sampleValue, a));
       }
@@ -722,7 +766,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
     // render isosurface
     if (isoHit) {
-      color += blendFactor * 2 * vec4f(sampleColor.xyz, 1) * gradientLighting(unitVolSize, samplePos, rayDir);
+      color += blendFactor * 2 * vec4f(sampleColor.xyz, 1) * gradientLighting(unitVolSize, samplePos);
       break;
     }
 
