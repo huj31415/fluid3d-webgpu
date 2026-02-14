@@ -517,5 +517,8 @@ uni.values.isoMax.set([0.6]);
 uni.values.lightDir.set(lightDir);
 uni.values.ambientIntensity.set([ambientIntensity]);
 uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
+uni.values.phaseG.set([0.5]);
+uni.values.absorption.set([10]);
+// uni.values.scattering.set([5]);
 
 main().then(() => refreshPreset(false));

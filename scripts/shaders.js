@@ -613,7 +613,7 @@ fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f) -> vec4f {
 fn henyeyGreenstein(g: f32, cosTheta: f32) -> f32 {
   let g2 = g * g;
   let denom = 1.0 + g2 - 2.0 * g * cosTheta;
-  return (1.0 / (4.0 * 3.14159)) * (1.0 - g2) / (denom * sqrt(denom));
+  return (1.0 - g2) / (4.0 * 3.14159 * denom * sqrt(denom));
 }
 
 @fragment
@@ -634,7 +634,6 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
   let intersection = rayBoxIntersect(rayOrigin, rayDir);
 
   let cosTheta = dot(rayDir, uni.lightDir);
-  let phase = henyeyGreenstein(0.6, cosTheta);
 
   // ray start position offset
   let offset = pcgHash(fragCoord.x + uni.resolution.x * fragCoord.y);
@@ -642,7 +641,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
   // simple gradient towards light direction if ray does not intersect the box
   if (intersection.x > intersection.y || intersection.y <= 0.0) {
     // discard;
-    return vec4f(0.1 * (1 + f32(enableLighting) * (cosTheta + 0.1 * offset)));
+    return vec4f(0.1 * (1 + f32(enableLighting) * (1 + cosTheta + 0.1 * offset)));
     // + smoothstep(0.9999, 1, cosTheta); // draw light
     // return vec4f(0.1 * (1 + phase + 0.1 * offset));
   }
@@ -660,6 +659,8 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
   var remainingDist = intersection.y - t0;
   
   let unitVolSize = 1 / uni.volSize;
+
+  let phase = henyeyGreenstein(uni.phaseG, cosTheta);
 
   loop {
     if (remainingDist <= 0.0 || color.a >= 0.95) { break; }
@@ -699,7 +700,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
     var isoHit = false;
 
     if (uni.visMode <= 2.0) { // 0: scalar-abs-bw, 1: scalar-color
-      let sampleValue = uni.visMult * select(rawSample.x, rawSample.y - 1, uni.visMode == 2);//y-uni.smokeTemp; // scalar, also add option for y-1 for smoke temperature
+      let sampleValue = uni.visMult * select(rawSample.x, rawSample.y - 1, uni.visMode == 2);//y-uni.smokeTemp; // scalar, y-1 for smoke temperature
       
       // Skip if empty and not a boundary
       if (sampleValue == 0.0 && barrier > 0.0) { continue; }
@@ -730,7 +731,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
             let lightSample = textureSampleLevel(stateTexture, stateSampler, lightPos, 0).x;
             if (lightSample < 0.01) { continue; }
 
-            transparency *= exp(-lightDt * 10 * lightSample); // light absorption by samples
+            transparency *= exp(-lightDt * (uni.absorption) * lightSample); // light absorption by samples
           }
           let sampleLighting = 2 * vec3f(sampleValue) * (uni.ambientIntensity + 10 * vec3f(uni.lightColor) * transparency * phase);
           sampleColor = abs(vec4f(sampleLighting, 10 * a));

@@ -30,6 +30,10 @@ uni.addUniform("lightDir", "vec3f");      // normalized directional light direct
 uni.addUniform("ambientIntensity", "f32");// ambient light intensity
 
 uni.addUniform("lightColor", "vec3f");    // ambient light color * intensity
+uni.addUniform("phaseG", "f32");    // ambient light color * intensity
+
+// uni.addUniform("scattering", "f32");   
+uni.addUniform("absorption", "f32");   
 
 // visMode, options, pressureLocalIter can be packed
 uni.finalize();
@@ -88,7 +92,7 @@ function sphericalToCartesian(azimuth, elevation, distance) {
   const z = Math.cos(elevation) * Math.cos(azimuth);
   return vec3.scale([x, y, z], distance);
 }
-let lightDir = vec3.normalize(sphericalToCartesian(toRad(45), toRad(45), 1));
+let lightDir = vec3.normalize(sphericalToCartesian(toRad(135), toRad(45), 1));
 let lightIntensity = 5;
 let lightColor = vec3.fromValues(1, 1, 1);
 let ambientIntensity = 1;
@@ -380,7 +384,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     else options &= ~(1 << 2);
     uni.values.options.set([options]);
   });
-  gui.addNumericInput("lightAzimuth", true, "Azimuth", { min: 0, max: 360, step: 1, val: 45, float: 0 }, "lightCtrl", (value) => {
+  gui.addNumericInput("lightAzimuth", true, "Azimuth", { min: 0, max: 360, step: 1, val: 135, float: 0 }, "lightCtrl", (value) => {
     lightDir = vec3.normalize(sphericalToCartesian(toRad(value), Math.asin(lightDir[1]), 1));
     uni.values.lightDir.set(lightDir);
   });
@@ -408,6 +412,9 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     ambientIntensity = value;
     uni.values.ambientIntensity.set([ambientIntensity]);
   });
+  gui.addNumericInput("phaseG", true, "Phase g", { min: -0.99, max: 0.99, step: 0.01, val: 0.5, float: 2 }, "lightCtrl", (value) => uni.values.phaseG.set([value]), "Henyey-Greenstein phase function g parameter for single scattering approximation; -1 is fully backscattering, 0 is isotropic, 1 is fully forward scattering");
+  gui.addNumericInput("absorption", true, "Absorption", { min: 0, max: 20, step: 0.01, val: 10, float: 2 }, "lightCtrl", (value) => uni.values.absorption.set([value]));
+  // gui.addNumericInput("scattering", true, "Scattering", { min: 0, max: 20, step: 0.01, val: 5, float: 2 }, "lightCtrl", (value) => uni.values.scattering.set([value]));
 }
 
 // Camera keybinds
