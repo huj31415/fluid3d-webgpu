@@ -81,7 +81,7 @@ texture-formats-tier1: ${textureTier1}
     if (msg.includes("max buffer size limit"))
       alert(`Max buffer size exceeded. Reduce the simulation domain size to decrease buffer size`);
     else {
-      alert(msg);
+      // alert(msg);
     }
     cancelAnimationFrame(rafId);
     return;
@@ -111,7 +111,7 @@ texture-formats-tier1: ${textureTier1}
   // advect (v) -> jacobi diffusion (if viscous) (div,p) -> force
   // -> jacobi pressure (>20iter) -> pressure projection (save in local memory? probably not due to halo access for laplacian for projection step)
 
-  const newTexture = (name, format = `r${floatPrecision}float`, copyDst = false, storage = true) => device.createTexture({
+  const new3dTexture = (name, format = `r${floatPrecision}float`, copyDst = false, storage = true) => device.createTexture({
     size: simulationDomain,
     dimension: "3d",
     format: format,
@@ -120,19 +120,28 @@ texture-formats-tier1: ${textureTier1}
   });
 
   // staggered grids?
-  storage.velTex0 = newTexture("vel0", `rgba${floatPrecision}float`);
-  storage.velTexM = newTexture("velM", `rgba${floatPrecision}float`);
-  storage.velTex1 = newTexture("vel1", `rgba${floatPrecision}float`);
-  storage.divTex = newTexture("divergence");
-  storage.pressureTex = newTexture("pressure", `r${textureTier2 ? floatPrecision : 32}float`);
+  storage.velTex0 = new3dTexture("vel0", `rgba${floatPrecision}float`);
+  storage.velTexM = new3dTexture("velM", `rgba${floatPrecision}float`);
+  storage.velTex1 = new3dTexture("vel1", `rgba${floatPrecision}float`);
+  storage.divTex = new3dTexture("divergence");
+  storage.pressureTex = new3dTexture("pressure", `r${textureTier2 ? floatPrecision : 32}float`);
   // smoke + temp
-  storage.smokeTemp0 = newTexture("smokeTemp0", `rg${floatPrecision}float`);
-  storage.smokeTempM = newTexture("smokeTempM", `rg${floatPrecision}float`);
-  storage.smokeTemp1 = newTexture("smokeTemp1", `rg${floatPrecision}float`);
-  storage.curlTex = newTexture("curl", `rgba${floatPrecision}float`);
-  storage.barrierTex = newTexture("barrier", "r8unorm", true, false);
+  storage.smokeTemp0 = new3dTexture("smokeTemp0", `rg${floatPrecision}float`);
+  storage.smokeTempM = new3dTexture("smokeTempM", `rg${floatPrecision}float`);
+  storage.smokeTemp1 = new3dTexture("smokeTemp1", `rg${floatPrecision}float`);
+  storage.curlTex = new3dTexture("curl", `rgba${floatPrecision}float`);
+  storage.barrierTex = new3dTexture("barrier", "r8unorm", true, false);
   // store bitmask for barriers in 6 directions
-  storage.barrierMask = newTexture("barrierMask", "r8uint", false, true);
+  storage.barrierMask = new3dTexture("barrierMask", "r8uint", false, true);
+
+  // stores light reaching each point, aligned to lightDir
+  storage.lightVolume = device.createTexture({
+    size: [lightingTexSize, lightingTexSize, maxLightingSteps],
+    dimension: "3d",
+    format: "r8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+    label: `lightVolume texture`
+  });;
 
   updateBarrierTexture();
 
@@ -306,11 +315,6 @@ texture-formats-tier1: ${textureTier1}
     // projectionComputeBindGroup(storage.velTex0, storage.velTex1)
   ];
 
-  const renderModule = device.createShaderModule({
-    code: renderShaderCode,
-    label: "render module"
-  });
-
   const filter = f32filterable ? "linear" : "nearest";
   const f32sampler = device.createSampler({
     magFilter: filter,
@@ -318,6 +322,41 @@ texture-formats-tier1: ${textureTier1}
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
     addressModeW: "clamp-to-edge",
+  });
+
+  const lightVolumeComputePipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: {
+        module: device.createShaderModule({
+          code: lightVolumeShaderCode,
+          label: `light volume compute module`
+        }),
+        entryPoint: 'main'
+      },
+      label: `light volume compute pipeline`
+    });
+  
+  const lightVolumeComputeBindGroup = (stateTex) => device.createBindGroup({
+    layout: lightVolumeComputePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: stateTex.createView() },
+      { binding: 2, resource: storage.barrierTex.createView() },
+      { binding: 3, resource: linSampler },
+      { binding: 4, resource: f32sampler },
+      { binding: 5, resource: storage.lightVolume.createView() },
+    ],
+    label: "light volume compute bind group"
+  });
+
+  const lightVolumeComputeBindGroups = [
+    lightVolumeComputeBindGroup(storage.smokeTemp0),
+    lightVolumeComputeBindGroup(storage.smokeTemp1),
+  ];
+
+  const renderModule = device.createShaderModule({
+    code: renderShaderCode,
+    label: "render module"
   });
 
   const renderPipeline = device.createRenderPipeline({
@@ -339,6 +378,7 @@ texture-formats-tier1: ${textureTier1}
       { binding: 2, resource: storage.barrierTex.createView() },
       { binding: 3, resource: linSampler },
       { binding: 4, resource: f32sampler },
+      { binding: 5, resource: storage.lightVolume.createView() },
     ],
   });
 
@@ -446,6 +486,14 @@ texture-formats-tier1: ${textureTier1}
       pingPongIndex = 1 - pingPongIndex;
     }
 
+    if (lighting) {
+      lightingPass = encoder.beginComputePass();
+      lightingPass.setPipeline(lightVolumeComputePipeline);
+      lightingPass.setBindGroup(0, lightVolumeComputeBindGroups[pingPongIndex]);
+      lightingPass.dispatchWorkgroups(...lightingDispatchSize);
+      lightingPass.end();
+    }
+
     const renderPass = renderTimingHelper.beginRenderPass(encoder, renderPassDescriptor);
     renderPass.setPipeline(renderPipeline);
     renderPass.setBindGroup(0, renderBindGroups[renderTextureIdx + (pingPong ? pingPongIndex : 0)]); // 0 = velocity, 2 = divergence, 3 = pressure, 4-5 = smoke, 6 = curl
@@ -517,8 +565,10 @@ uni.values.isoMax.set([0.6]);
 uni.values.lightDir.set(lightDir);
 uni.values.ambientIntensity.set([ambientIntensity]);
 uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
-uni.values.phaseG.set([0.5]);
+uni.values.phaseG.set([0.6]);
 uni.values.absorption.set([10]);
+updateLight(lightAzimuth, lightElevation);
+uni.values.lightVolSize.set([lightingTexSize, lightingTexSize, maxLightingSteps]);
 // uni.values.scattering.set([5]);
 
 main().then(() => refreshPreset(false));

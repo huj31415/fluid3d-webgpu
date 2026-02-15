@@ -542,7 +542,79 @@ fn main(
 }
 `;
 
-// maybe implement simple lighting by checking if barrier is between light source and sample point
+// light volume shader
+// lighting direction axis aligned 3d texture, march from ray volume intersection
+const lightVolumeShaderCode = /* wgsl */`
+${uni.uniformStruct}
+
+@group(0) @binding(0) var<uniform> uni: Uniforms;
+@group(0) @binding(1) var stateTexture: texture_3d<f32>;
+@group(0) @binding(2) var barrierTexture: texture_3d<f32>;
+@group(0) @binding(3) var linSampler: sampler;
+@group(0) @binding(4) var stateSampler: sampler;
+@group(0) @binding(5) var lightVolume: texture_storage_3d<r8unorm, write>;
+
+fn pcgHash(input: u32) -> f32 {
+  let state = input * 747796405u + 2891336453u;
+  let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return f32((word >> 22) ^ word) / 4294967295.0;
+}
+
+fn rayBoxIntersect(start: vec3f, dir: vec3f) -> vec2f {
+  let box_min = vec3f(0);
+  let box_max = uni.volSizeNorm;
+  let inv_dir = 1.0 / dir;
+  let tmin_tmp = (box_min - start) * inv_dir;
+  let tmax_tmp = (box_max - start) * inv_dir;
+  let tmin = min(tmin_tmp, tmax_tmp);
+  let tmax = max(tmin_tmp, tmax_tmp);
+  let t0 = max(tmin.x, max(tmin.y, tmin.z));
+  let t1 = min(tmax.x, min(tmax.y, tmax.z));
+  return vec2f(t0, t1);
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= u32(uni.lightVolSize.x) || gid.y >= u32(uni.lightVolSize.y)) { return; }
+
+  let gid_f = vec2f(gid.xy);
+  let invSize = 1.0 / (uni.lightVolSize - 1.0);
+  let uv = gid_f * invSize.xy;
+
+  // Jitter the starting depth to reduce aliasing
+  let offset = pcgHash(gid.x + u32(uni.lightVolSize.x) * gid.y) * uni.lightStepSize * uni.lightDir;
+  
+  var transparency = 1.0;
+
+  for (var i = 0u; i < u32(uni.lightVolSize.z); i++) {
+    // Calculate normalized Z in light space
+    let z_norm = f32(i) * invSize.z;
+
+    // transform current light-space UVW to world space
+    let samplePosWorld = (uni.lightToWorld * vec4f(uv, z_norm, 1.0)).xyz + offset;
+
+    // convert to [0,1] for sampling the simulation state
+    let samplePosNorm = samplePosWorld / uni.volSizeNorm;
+
+    // only sample if inside the simulation domain
+    if (all(samplePosNorm >= vec3f(0.0)) && all(samplePosNorm <= vec3f(1.0))) {
+      let barrier = textureSampleLevel(barrierTexture, linSampler, samplePosNorm, 0).r;
+      
+      if (barrier < 0.5) {
+        transparency = 0.0; // Light blocked by solid
+      } else if (transparency > 0.01) {
+        let sampleDensity = textureSampleLevel(stateTexture, stateSampler, samplePosNorm, 0).r;
+        transparency *= exp(-sampleDensity * uni.absorption * uni.lightStepSize);
+      }
+    }
+
+    // write to the light volume
+    // gid.xy identifies the column, i is the depth
+    textureStore(lightVolume, vec3u(gid.xy, i), vec4f(transparency, 0, 0, 1.0));
+  }
+}
+`;
+
 const renderShaderCode = /* wgsl */`
 ${uni.uniformStruct}
 
@@ -551,6 +623,7 @@ ${uni.uniformStruct}
 @group(0) @binding(2) var barrierTexture: texture_3d<f32>;
 @group(0) @binding(3) var linSampler: sampler;
 @group(0) @binding(4) var stateSampler: sampler;
+@group(0) @binding(5) var lightVolume: texture_3d<f32>;
 
 struct VertexOut {
   @builtin(position) position: vec4f,
@@ -709,30 +782,8 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
       if (uni.visMode == 0.0) {
         if (enableLighting) {
-          // march toward light for shading
-          var transparency = 1.0;
+          let transparency = textureSampleLevel(lightVolume, linSampler, (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz, 0).x;
 
-          var remainingLightDist = rayBoxIntersect(samplePos * uni.volSizeNorm, uni.lightDir).y;
-          let lightDtVec = 1.0 / (uni.volSize * abs(uni.lightDir));
-          let lightDt = uni.rayDtMult * 2 * min(lightDtVec.x, min(lightDtVec.y, lightDtVec.z));
-
-          var lightPos = samplePos;
-          var i = 0;
-          loop {
-            lightPos += uni.lightDir * lightDt;
-            remainingLightDist -= lightDt;
-
-            if (transparency < 0.01 || remainingLightDist <= 0) { break; }
-            let lightBarrier = textureSampleLevel(barrierTexture, linSampler, lightPos, 0).x;
-            if (lightBarrier < 0.5) {
-              transparency = 0;
-              break;
-            }
-            let lightSample = textureSampleLevel(stateTexture, stateSampler, lightPos, 0).x;
-            if (lightSample < 0.01) { continue; }
-
-            transparency *= exp(-lightDt * (uni.absorption) * lightSample); // light absorption by samples
-          }
           let sampleLighting = 2 * vec3f(sampleValue) * (uni.ambientIntensity + 10 * vec3f(uni.lightColor) * transparency * phase);
           sampleColor = abs(vec4f(sampleLighting, 10 * a));
         } else {

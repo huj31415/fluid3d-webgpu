@@ -1,5 +1,8 @@
 const uni = new Uniforms();
-uni.addUniform("invMatrix", "mat4x4f");   // inverse proj*view matrix
+uni.addUniform("invMatrix", "mat4x4f");   // inverse proj*view matrix for reverse projecting rays to world space
+
+uni.addUniform("worldToLight", "mat4x4f");
+uni.addUniform("lightToWorld", "mat4x4f");
 
 uni.addUniform("cameraPos", "vec3f");     // camera position in world space
 uni.addUniform("dt", "f32");              // simulation time step
@@ -29,24 +32,31 @@ uni.addUniform("isoMax", "f32");          // isosurface value
 uni.addUniform("lightDir", "vec3f");      // normalized directional light direction in world space
 uni.addUniform("ambientIntensity", "f32");// ambient light intensity
 
-uni.addUniform("lightColor", "vec3f");    // ambient light color * intensity
-uni.addUniform("phaseG", "f32");    // ambient light color * intensity
+uni.addUniform("lightColor", "vec3f");    // light color * intensity
+uni.addUniform("phaseG", "f32");          // HG phase function g param
 
-// uni.addUniform("scattering", "f32");   
-uni.addUniform("absorption", "f32");   
+uni.addUniform("lightVolSize", "vec3f");
+uni.addUniform("lightStepSize", "f32");   // step size for light marching in lighting pass
 
-// visMode, options, pressureLocalIter can be packed
+uni.addUniform("absorption", "f32");      // absorption coefficient
+// uni.addUniform("scattering", "f32");
+
+// visMode, options, pressureLocalIter, smokePos can be packed
 uni.finalize();
 
 const storage = {
   velTex0: null,
   velTex1: null,
+  velTexM: null,
   divTex: null,
   pressureTex: null,
   smokeTemp0: null,
   smokeTemp1: null,
+  smokeTempM: null,
   curlTex: null,
   barrierTex: null,
+  barrierMask: null,
+  lightVolume: null,
 };
 
 let initialize = true, clearPressureRefreshSmoke = true, refreshBarriers = true, updateBarrierMask = true;
@@ -92,10 +102,70 @@ function sphericalToCartesian(azimuth, elevation, distance) {
   const z = Math.cos(elevation) * Math.cos(azimuth);
   return vec3.scale([x, y, z], distance);
 }
-let lightDir = vec3.normalize(sphericalToCartesian(toRad(135), toRad(45), 1));
+
+let lighting = false;
+let lightAzimuth = toRad(135);
+let lightElevation = toRad(45);
+let lightDir = vec3.normalize(sphericalToCartesian(lightAzimuth, lightElevation, 1));
 let lightIntensity = 5;
 let lightColor = vec3.fromValues(1, 1, 1);
 let ambientIntensity = 1;
+
+let lightingTexSize = 192;
+let maxLightingSteps = 192;
+let lightingDispatchSize = [Math.ceil(lightingTexSize / 16), Math.ceil(lightingTexSize / 16), 1];
+
+function updateLight(azimuth, elevation) {
+  lightDir = vec3.normalize(sphericalToCartesian(azimuth, elevation, 1));
+  uni.values.lightDir.set(lightDir);
+  let right = vec3.cross(lightDir, (Math.abs(lightDir[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]));
+  let up = vec3.cross(lightDir, right);
+
+  // transform to light space, for sampling during rendering
+  let lightRotation = [
+    right[0], up[0], -lightDir[0], 0,
+    right[1], up[1], -lightDir[1], 0,
+    right[2], up[2], -lightDir[2], 0,
+    0,        0,     0,            1
+  ];
+
+  // transform simulation domain corners to light space and find bounding box for ortho projection
+  let corners = [
+    vec4.fromValues(0, 0, 0, 0),
+    vec4.fromValues(simulationDomainNorm[0], 0, 0, 0),
+    vec4.fromValues(0, simulationDomainNorm[1], 0, 0),
+    vec4.fromValues(0, 0, simulationDomainNorm[2], 0),
+    vec4.fromValues(simulationDomainNorm[0], simulationDomainNorm[1], 0, 0),
+    vec4.fromValues(simulationDomainNorm[0], 0, simulationDomainNorm[2], 0),
+    vec4.fromValues(0, simulationDomainNorm[1], simulationDomainNorm[2], 0),
+    vec4.fromValues(simulationDomainNorm[0], simulationDomainNorm[1], simulationDomainNorm[2], 0)
+  ];
+
+  let min = [Infinity, Infinity, Infinity];
+  let max = [-Infinity, -Infinity, -Infinity];
+
+  corners.forEach(corner => {
+    let transformedCorner = mat4.transformVec4(lightRotation, [...corner, 1]);
+    for (let i = 0; i < 3; i++) {
+      min[i] = Math.min(min[i], transformedCorner[i]);
+      max[i] = Math.max(max[i], transformedCorner[i]);
+    }
+  });
+
+  // convert world space to normalized light space coordinates
+  let worldToLightMatrix = mat4.fromScaling([
+    1 / (max[0] - min[0]), 
+    1 / (max[1] - min[1]), 
+    1 / (max[2] - min[2])
+  ]);
+  mat4.translate(worldToLightMatrix, [-min[0], -min[1], -min[2]], worldToLightMatrix);
+  mat4.multiply(worldToLightMatrix, lightRotation, worldToLightMatrix);
+  let lightToWorldMatrix = mat4.invert(worldToLightMatrix);
+
+  uni.values.worldToLight.set(worldToLightMatrix);
+  uni.values.lightToWorld.set(lightToWorldMatrix);
+  uni.values.lightStepSize.set([(max[2] - min[2]) / maxLightingSteps]);
+}
 
 /**
  * Resizes the simulation domain
@@ -380,17 +450,18 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 {
   gui.addGroup("lightCtrl", "Lighting controls");
   gui.addCheckbox("enableLighting", "Enable lighting", false, "lightCtrl", (checked) => {
+    lighting = checked;
     if (checked) options |= (1 << 2);
     else options &= ~(1 << 2);
     uni.values.options.set([options]);
   });
   gui.addNumericInput("lightAzimuth", true, "Azimuth", { min: 0, max: 360, step: 1, val: 135, float: 0 }, "lightCtrl", (value) => {
-    lightDir = vec3.normalize(sphericalToCartesian(toRad(value), Math.asin(lightDir[1]), 1));
-    uni.values.lightDir.set(lightDir);
+    lightAzimuth = toRad(value);
+    updateLight(lightAzimuth, lightElevation);
   });
   gui.addNumericInput("lightElevation", true, "Elevation", { min: -90, max: 90, step: 1, val: 45, float: 0 }, "lightCtrl", (value) => {
-    lightDir = vec3.normalize(sphericalToCartesian(Math.atan2(lightDir[0], lightDir[2]), toRad(value), 1));
-    uni.values.lightDir.set(lightDir);
+    lightElevation = toRad(value);
+    updateLight(lightAzimuth, lightElevation);
   });
   gui.addNumericInput("lightIntensity", true, "Intensity", { min: 0, max: 10, step: 0.1, val: lightIntensity, float: 1 }, "lightCtrl", (value) => {
     lightIntensity = value;
@@ -412,7 +483,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     ambientIntensity = value;
     uni.values.ambientIntensity.set([ambientIntensity]);
   });
-  gui.addNumericInput("phaseG", true, "Phase g", { min: -0.99, max: 0.99, step: 0.01, val: 0.5, float: 2 }, "lightCtrl", (value) => uni.values.phaseG.set([value]), "Henyey-Greenstein phase function g parameter for single scattering approximation; -1 is fully backscattering, 0 is isotropic, 1 is fully forward scattering");
+  gui.addNumericInput("phaseG", true, "Phase g", { min: -0.99, max: 0.99, step: 0.01, val: 0.6, float: 2 }, "lightCtrl", (value) => uni.values.phaseG.set([value]), "Henyey-Greenstein phase function g parameter for single scattering approximation; -1 is fully backscattering, 0 is isotropic, 1 is fully forward scattering");
   gui.addNumericInput("absorption", true, "Absorption", { min: 0, max: 20, step: 0.01, val: 10, float: 2 }, "lightCtrl", (value) => uni.values.absorption.set([value]));
   // gui.addNumericInput("scattering", true, "Scattering", { min: 0, max: 20, step: 0.01, val: 5, float: 2 }, "lightCtrl", (value) => uni.values.scattering.set([value]));
 }
