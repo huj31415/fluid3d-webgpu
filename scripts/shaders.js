@@ -200,26 +200,20 @@ fn advectStage2(midTex: texture_3d<f32>, oldTex: texture_3d<f32>, forwardPosNorm
     textureLoad(oldTex, pastPos_u + vec3u(0,1,1), 0),
     textureLoad(oldTex, pastPos_u + vec3u(1,1,1), 0)
   );
-  let clampMin = (
-    min(surroundingValues[0],
-    min(surroundingValues[1],
-    min(surroundingValues[2],
-    min(surroundingValues[3],
-    min(surroundingValues[4],
-    min(surroundingValues[5],
-    min(surroundingValues[6],
-    surroundingValues[7]
-  ))))))));
-  let clampMax = (
-    max(surroundingValues[0],
-    max(surroundingValues[1],
-    max(surroundingValues[2],
-    max(surroundingValues[3],
-    max(surroundingValues[4],
-    max(surroundingValues[5],
-    max(surroundingValues[6],
-    surroundingValues[7]
-  ))))))));
+  let clampMin = min(min(
+    min(surroundingValues[0], surroundingValues[1]),
+    min(surroundingValues[2], surroundingValues[3])
+  ), min(
+    min(surroundingValues[4], surroundingValues[5]),
+    min(surroundingValues[6], surroundingValues[7])
+  ));
+  let clampMax = max(max(
+    max(surroundingValues[0], surroundingValues[1]),
+    max(surroundingValues[2], surroundingValues[3])
+  ), max(
+    max(surroundingValues[4], surroundingValues[5]),
+    max(surroundingValues[6], surroundingValues[7])
+  ));
 
   return vec4f(clamp(newValue, clampMin, clampMax));
 }
@@ -575,10 +569,10 @@ fn rayBoxIntersect(start: vec3f, dir: vec3f) -> vec2f {
 
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
-  if (gid.x >= u32(uni.lightVolSize.x) || gid.y >= u32(uni.lightVolSize.y)) { return; }
+  if (gid.x >= u32(uni.lightVolSize.x) || gid.y >= u32(uni.lightVolSize.x)) { return; }
 
   let gid_f = vec2f(gid.xy);
-  let invSize = 1.0 / (uni.lightVolSize - 1.0);
+  let invSize = 1.0 / (uni.lightVolSize.xxy - 1.0);
   let uv = gid_f * invSize.xy;
 
   // Jitter the starting depth to reduce aliasing
@@ -586,7 +580,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   
   var transparency = 1.0;
 
-  for (var i = 0u; i < u32(uni.lightVolSize.z); i++) {
+  for (var i = 0u; i < u32(uni.lightVolSize.y); i++) {
     // Calculate normalized Z in light space
     let z_norm = f32(i) * invSize.z;
 
@@ -678,7 +672,12 @@ fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f) -> vec4f {
       length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).xyz),
       length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).xyz)
     ) + 1e-5);
-    return uni.ambientIntensity + vec4f(uni.lightColor, 0) * (saturate(dot(normal, uni.lightDir)));// + 100* pow(saturate(dot(h, normal)), 16));
+    var transparency = 1.0;
+    if (uni.visMode == 0.0) {
+      let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz;
+      transparency = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
+    }
+    return uni.ambientIntensity + vec4f(uni.lightColor, 0) * transparency * (saturate(dot(normal, uni.lightDir))); // + 100* pow(saturate(dot(h, normal)), 16));
   }
   return vec4f(uni.ambientIntensity);
 }
@@ -759,7 +758,14 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
           textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).x,
           textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).x
         ));
-        color += blendFactor * 2 * (uni.ambientIntensity + vec4f(uni.lightColor, 0) * saturate(dot(-normal, uni.lightDir)));
+        var transparency = 1.0;
+        if (uni.visMode == 0.0) {
+          // prevent shadow acne by offsetting the sample position towards the light source based on the angle between the normal and light direction
+          let sampleOffset = vec3f(offset, offset, 5 * max(length(cross(normal, uni.lightDir)) / dot(normal, uni.lightDir + 1e-5), 1)) / uni.lightVolSize.xxy;
+          let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz - sampleOffset; // offset towards light to avoid self-shadowing artifacts
+          transparency = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
+        }
+        color += blendFactor * 2 * (uni.ambientIntensity + vec4f(uni.lightColor, 0) * transparency * saturate(dot(-normal, uni.lightDir)));
       } else {
         color += blendFactor; // Barrier color
       }
@@ -782,7 +788,8 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
       if (uni.visMode == 0.0) {
         if (enableLighting) {
-          let transparency = textureSampleLevel(lightVolume, linSampler, (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz, 0).x;
+          let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz; // + vec3f(offset, offset, 0) / uni.lightVolSize.x;
+          let transparency = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
 
           let sampleLighting = 2 * vec3f(sampleValue) * (uni.ambientIntensity + 10 * vec3f(uni.lightColor) * transparency * phase);
           sampleColor = abs(vec4f(sampleLighting, 10 * a));

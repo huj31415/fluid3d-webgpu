@@ -412,6 +412,7 @@ texture-formats-tier1: ${textureTier1}
     pressureComputeTimingHelpers[i] = new TimingHelper(device);
   }
   const projectionComputeTimingHelper = new TimingHelper(device);
+  const lightingTimingHelper = new TimingHelper(device);
   const renderTimingHelper = new TimingHelper(device);
 
   const wgDispatchSize = [
@@ -486,8 +487,8 @@ texture-formats-tier1: ${textureTier1}
       pingPongIndex = 1 - pingPongIndex;
     }
 
-    if (lighting) {
-      lightingPass = encoder.beginComputePass();
+    if (lighting && gui.io.visType.value == "Smoke") {
+      lightingPass = lightingTimingHelper.beginComputePass(encoder);
       lightingPass.setPipeline(lightVolumeComputePipeline);
       lightingPass.setBindGroup(0, lightVolumeComputeBindGroups[pingPongIndex]);
       lightingPass.dispatchWorkgroups(...lightingDispatchSize);
@@ -516,6 +517,11 @@ texture-formats-tier1: ${textureTier1}
     } else {
       advectionComputeTime = velDivComputeTime = pressureComputeTime = projectionComputeTime = 0;
     }
+    if (lighting && gui.io.visType.value == "Smoke") {
+      lightingTimingHelper.getResult().then(gpuTime => lightingTime += (gpuTime / 1e6 - lightingTime) / filterStrength);
+    } else {
+      lightingTime = 0;
+    }
     renderTimingHelper.getResult().then(gpuTime => renderTime += (gpuTime / 1e6 - renderTime) / filterStrength);
 
     jsTime += (performance.now() - startTime - jsTime) / filterStrength;
@@ -533,6 +539,7 @@ texture-formats-tier1: ${textureTier1}
     gui.io.pressureTime(pressureComputeTime);
     gui.io.vProjTime(projectionComputeTime);
     gui.io.advectionTime(advectionComputeTime);
+    gui.io.lightingTime(lightingTime);
   }, 100);
 
   camera.updatePosition();
@@ -568,7 +575,7 @@ uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
 uni.values.phaseG.set([0.6]);
 uni.values.absorption.set([10]);
 updateLight(lightAzimuth, lightElevation);
-uni.values.lightVolSize.set([lightingTexSize, lightingTexSize, maxLightingSteps]);
+uni.values.lightVolSize.set([lightingTexSize, maxLightingSteps]);
 // uni.values.scattering.set([5]);
 
 main().then(() => refreshPreset(false));

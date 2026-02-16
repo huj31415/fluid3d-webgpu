@@ -1,8 +1,8 @@
 const uni = new Uniforms();
 uni.addUniform("invMatrix", "mat4x4f");   // inverse proj*view matrix for reverse projecting rays to world space
 
-uni.addUniform("worldToLight", "mat4x4f");
-uni.addUniform("lightToWorld", "mat4x4f");
+uni.addUniform("worldToLight", "mat4x4f");// world position to normalized light space matrix for sampling light volume during rendering
+uni.addUniform("lightToWorld", "mat4x4f");// normalized light space to world position matrix for sampling simulation domain during lighting pass
 
 uni.addUniform("cameraPos", "vec3f");     // camera position in world space
 uni.addUniform("dt", "f32");              // simulation time step
@@ -35,10 +35,10 @@ uni.addUniform("ambientIntensity", "f32");// ambient light intensity
 uni.addUniform("lightColor", "vec3f");    // light color * intensity
 uni.addUniform("phaseG", "f32");          // HG phase function g param
 
-uni.addUniform("lightVolSize", "vec3f");
+uni.addUniform("lightVolSize", "vec2f");
 uni.addUniform("lightStepSize", "f32");   // step size for light marching in lighting pass
-
 uni.addUniform("absorption", "f32");      // absorption coefficient
+
 // uni.addUniform("scattering", "f32");
 
 // visMode, options, pressureLocalIter, smokePos can be packed
@@ -111,8 +111,8 @@ let lightIntensity = 5;
 let lightColor = vec3.fromValues(1, 1, 1);
 let ambientIntensity = 1;
 
-let lightingTexSize = 192;
-let maxLightingSteps = 192;
+let lightingTexSize = 256;
+let maxLightingSteps = 256;
 let lightingDispatchSize = [Math.ceil(lightingTexSize / 16), Math.ceil(lightingTexSize / 16), 1];
 
 function updateLight(azimuth, elevation) {
@@ -215,6 +215,11 @@ function hardReset() {
   pressureGlobalIter = pressureGlobalIterTemp;
   cancelAnimationFrame(rafId);
   clearInterval(perfIntId);
+  updateLight(lightAzimuth, lightElevation);
+  lightingTexSize = gui.io.lightingTexSize.value;
+  maxLightingSteps = gui.io.maxLightingSteps.value;
+  lightingDispatchSize = [Math.ceil(lightingTexSize / 16), Math.ceil(lightingTexSize / 16), 1]
+  uni.values.lightVolSize.set([lightingTexSize, maxLightingSteps]);
   if (!vec3.equals(simulationDomain, newDomainSize)) resizeDomain(newDomainSize);
   if (storage.barrierTex) storage.barrierTex.destroy();
   if (cleared) main();
@@ -242,6 +247,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   gui.addNumericOutput("pressureTime", "Pressure", "ms", 2, "perfR");
   gui.addNumericOutput("vProjTime", "V Proj", "ms", 2, "perfR");
   gui.addNumericOutput("advectionTime", "Advection", "ms", 2, "perfR");
+  gui.addNumericOutput("lightingTime", "Lighting", "ms", 2, "perfR");
 }
 
 // Camera state section
@@ -485,6 +491,8 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
   });
   gui.addNumericInput("phaseG", true, "Phase g", { min: -0.99, max: 0.99, step: 0.01, val: 0.6, float: 2 }, "lightCtrl", (value) => uni.values.phaseG.set([value]), "Henyey-Greenstein phase function g parameter for single scattering approximation; -1 is fully backscattering, 0 is isotropic, 1 is fully forward scattering");
   gui.addNumericInput("absorption", true, "Absorption", { min: 0, max: 20, step: 0.01, val: 10, float: 2 }, "lightCtrl", (value) => uni.values.absorption.set([value]));
+  gui.addNumericInput("lightingTexSize", false, "Lighting tex size", { min: 64, max: 512, step: 16, val: lightingTexSize, float: 0 }, "lightCtrl", (value) => {}, "Requires reinitialization to apply");
+  gui.addNumericInput("maxLightingSteps", false, "Max lighting steps", { min: 64, max: 512, step: 16, val: maxLightingSteps, float: 0 }, "lightCtrl", (value) => {}, "Requires reinitialization to apply");
   // gui.addNumericInput("scattering", true, "Scattering", { min: 0, max: 20, step: 0.01, val: 5, float: 2 }, "lightCtrl", (value) => uni.values.scattering.set([value]));
 }
 
@@ -526,7 +534,7 @@ let rafId, perfIntId;
 
 // timing
 let jsTime = 0, lastFrameTime = performance.now(), deltaTime = 10, fps = 0,
-  advectionComputeTime = 0, velDivComputeTime = 0, pressureComputeTime = 0, projectionComputeTime = 0, renderTime = 0;
+  advectionComputeTime = 0, velDivComputeTime = 0, pressureComputeTime = 0, projectionComputeTime = 0, lightingTime = 0, renderTime = 0;
 
 // handle resizing
 window.onresize = window.onload = () => {
