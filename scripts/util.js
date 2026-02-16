@@ -35,7 +35,7 @@ uni.addUniform("ambientIntensity", "f32");// ambient light intensity
 uni.addUniform("lightColor", "vec3f");    // light color * intensity
 uni.addUniform("phaseG", "f32");          // HG phase function g param
 
-uni.addUniform("lightVolSize", "vec2f");
+uni.addUniform("lightVolSize", "vec2f");  // size of light volume texture, x*x is lighting resolution, y is lighting steps
 uni.addUniform("lightStepSize", "f32");   // step size for light marching in lighting pass
 uni.addUniform("absorption", "f32");      // absorption coefficient
 
@@ -66,7 +66,7 @@ let renderTextureIdx = 4, pingPong = true;
 let dt = 1;
 let oldDt;
 
-let options = 1;
+let options = 1 | (1 << 2); // barrier rendering and lighting on, isosurface off
 
 let advectionMode = 0; // 0: MacCormack, 1: Semi-Lagrangian
 
@@ -103,7 +103,7 @@ function sphericalToCartesian(azimuth, elevation, distance) {
   return vec3.scale([x, y, z], distance);
 }
 
-let lighting = false;
+let lighting = true;
 let lightAzimuth = toRad(135);
 let lightElevation = toRad(45);
 let lightDir = vec3.normalize(sphericalToCartesian(lightAzimuth, lightElevation, 1));
@@ -455,7 +455,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 
 {
   gui.addGroup("lightCtrl", "Lighting controls");
-  gui.addCheckbox("enableLighting", "Enable lighting", false, "lightCtrl", (checked) => {
+  gui.addCheckbox("enableLighting", "Enable lighting", true, "lightCtrl", (checked) => {
     lighting = checked;
     if (checked) options |= (1 << 2);
     else options &= ~(1 << 2);

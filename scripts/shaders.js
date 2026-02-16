@@ -569,9 +569,9 @@ fn rayBoxIntersect(start: vec3f, dir: vec3f) -> vec2f {
 
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
-  if (gid.x >= u32(uni.lightVolSize.x) || gid.y >= u32(uni.lightVolSize.x)) { return; }
-
   let gid_f = vec2f(gid.xy);
+  if (any(gid_f >= uni.lightVolSize.xx)) { return; }
+
   let invSize = 1.0 / (uni.lightVolSize.xxy - 1.0);
   let uv = gid_f * invSize.xy;
 
@@ -585,10 +585,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let z_norm = f32(i) * invSize.z;
 
     // transform current light-space UVW to world space
-    let samplePosWorld = (uni.lightToWorld * vec4f(uv, z_norm, 1.0)).xyz + offset;
-
-    // convert to [0,1] for sampling the simulation state
-    let samplePosNorm = samplePosWorld / uni.volSizeNorm;
+    let samplePosNorm = ((uni.lightToWorld * vec4f(uv, z_norm, 1.0)).xyz + offset) / uni.volSizeNorm;
 
     // only sample if inside the simulation domain
     if (all(samplePosNorm >= vec3f(0.0)) && all(samplePosNorm <= vec3f(1.0))) {
@@ -788,8 +785,17 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
       if (uni.visMode == 0.0) {
         if (enableLighting) {
-          let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz; // + vec3f(offset, offset, 0) / uni.lightVolSize.x;
-          let transparency = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
+          let invLightVolSize = 1.0 / uni.lightVolSize.x;
+          let lightOffset = vec2f(fract(fragCoord * 0.5) > vec2f(0.25)) * invLightVolSize; // small jitter to reduce light volume aliasing
+          
+          let lightSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz + vec3f(lightOffset, 0);
+          let lightSampleOffset = vec3f(-1.5, 0.5, 0) * invLightVolSize; // 4-sample filter offset in light volume UV space
+          let transparency = (
+            textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.xyz, 0).x +
+            textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.yyz, 0).x +
+            textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.xxz, 0).x +
+            textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.yxz, 0).x
+          ) * 0.25; // 4-sample filter for light volume
 
           let sampleLighting = 2 * vec3f(sampleValue) * (uni.ambientIntensity + 10 * vec3f(uni.lightColor) * transparency * phase);
           sampleColor = abs(vec4f(sampleLighting, 10 * a));
