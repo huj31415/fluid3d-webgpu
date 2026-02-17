@@ -39,6 +39,8 @@ uni.addUniform("lightVolSize", "vec2f");  // size of light volume texture, x*x i
 uni.addUniform("lightStepSize", "f32");   // step size for light marching in lighting pass
 uni.addUniform("absorption", "f32");      // absorption coefficient
 
+// smoke density?
+
 // uni.addUniform("scattering", "f32");
 
 // visMode, options, pressureLocalIter, smokePos can be packed

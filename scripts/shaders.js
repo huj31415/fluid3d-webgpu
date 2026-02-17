@@ -200,20 +200,51 @@ fn advectStage2(midTex: texture_3d<f32>, oldTex: texture_3d<f32>, forwardPosNorm
     textureLoad(oldTex, pastPos_u + vec3u(0,1,1), 0),
     textureLoad(oldTex, pastPos_u + vec3u(1,1,1), 0)
   );
-  let clampMin = min(min(
-    min(surroundingValues[0], surroundingValues[1]),
-    min(surroundingValues[2], surroundingValues[3])
-  ), min(
-    min(surroundingValues[4], surroundingValues[5]),
-    min(surroundingValues[6], surroundingValues[7])
-  ));
-  let clampMax = max(max(
-    max(surroundingValues[0], surroundingValues[1]),
-    max(surroundingValues[2], surroundingValues[3])
-  ), max(
-    max(surroundingValues[4], surroundingValues[5]),
-    max(surroundingValues[6], surroundingValues[7])
-  ));
+
+  // doesn't work, high pressure collects at bottom?
+  // let clampMin = min(min(
+  //   min(surroundingValues[0], surroundingValues[1]),
+  //   min(surroundingValues[2], surroundingValues[3])
+  // ), min(
+  //   min(surroundingValues[4], surroundingValues[5]),
+  //   min(surroundingValues[6], surroundingValues[7])
+  // ));
+  // let clampMax = max(max(
+  //   max(surroundingValues[0], surroundingValues[1]),
+  //   max(surroundingValues[2], surroundingValues[3])
+  // ), max(
+  //   max(surroundingValues[4], surroundingValues[5]),
+  //   max(surroundingValues[6], surroundingValues[7])
+  // ));
+  
+  // same problem as above
+  // var clampMin = surroundingValues[0];
+  // var clampMax = surroundingValues[0];
+  // for (var i = 1u; i < 8u; i++) {
+  //   clampMin = min(clampMin, surroundingValues[i]);
+  //   clampMax = max(clampMax, surroundingValues[i]);
+  // }
+  
+  let clampMin = (
+    min(surroundingValues[0],
+    min(surroundingValues[1],
+    min(surroundingValues[2],
+    min(surroundingValues[3],
+    min(surroundingValues[4],
+    min(surroundingValues[5],
+    min(surroundingValues[6],
+    surroundingValues[7]
+  ))))))));
+  let clampMax = (
+    max(surroundingValues[0],
+    max(surroundingValues[1],
+    max(surroundingValues[2],
+    max(surroundingValues[3],
+    max(surroundingValues[4],
+    max(surroundingValues[5],
+    max(surroundingValues[6],
+    surroundingValues[7]
+  ))))))));
 
   return vec4f(clamp(newValue, clampMin, clampMax));
 }
@@ -348,7 +379,7 @@ fn main(
 
 // Calculate pressure using pressure Poisson equation and red-black Gauss-Seidel iteration
 // Periodically zero pressure field after 50-100 frames or after significant updates
-// Merge with divergence shader?
+// Implement multigrid method
 const pressureShaderCode = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 @group(0) @binding(0) var<uniform> uni: Uniforms;
@@ -379,9 +410,7 @@ fn tileIndex(idx: vec3i) -> u32 {
 }
 
 fn neighborSum(gid: vec3u, currentPressure: f16, barrierMask: u32, currentTileIndex: u32, stride: vec3u) -> f16 {
-  // let pressureXn = select(currentPressure, tile[currentTileIndex - stride.x], (barrierMask & (1 << 0)) == 0);
-  let pressureXn = select(currentPressure, select(tile[currentTileIndex - stride.x], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 0)) == 0);
-  // let pressureXp = select(currentPressure, select(tile[currentTileIndex + stride.x], 0, gid.x == u32(uni.volSize.x) - 1), (barrierMask & (1 << 1)) == 0);
+  let pressureXn = select(currentPressure, f16(gid.x != u32(uni.volSize.x) - 1) * tile[currentTileIndex - stride.x], (barrierMask & (1 << 0)) == 0);
   let pressureXp = select(currentPressure, tile[currentTileIndex + stride.x], (barrierMask & (1 << 1)) == 0);
   let pressureYn = select(currentPressure, tile[currentTileIndex - stride.y], (barrierMask & (1 << 2)) == 0);
   let pressureYp = select(currentPressure, tile[currentTileIndex + stride.y], (barrierMask & (1 << 3)) == 0);
@@ -786,10 +815,10 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       if (uni.visMode == 0.0) {
         if (enableLighting) {
           let invLightVolSize = 1.0 / uni.lightVolSize.x;
-          let lightOffset = vec2f(fract(fragCoord * 0.5) > vec2f(0.25)) * invLightVolSize; // small jitter to reduce light volume aliasing
-          
+          let lightOffset = vec2f(fract(fragCoord * 0.5) > vec2f(0.25)) * invLightVolSize * 0.5; // small jitter to reduce light volume aliasing
+
           let lightSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz + vec3f(lightOffset, 0);
-          let lightSampleOffset = vec3f(-1.5, 0.5, 0) * invLightVolSize; // 4-sample filter offset in light volume UV space
+          let lightSampleOffset = vec3f(-0.5, 0.25, 0) * invLightVolSize; // 4-sample filter offset in light volume UV space
           let transparency = (
             textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.xyz, 0).x +
             textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.yyz, 0).x +
