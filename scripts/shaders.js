@@ -55,7 +55,6 @@ fn main(
       f32(abs(gid_f.z - uni.smokePos.x) <= uni.smokeHalfSize.x && (gid_f.y + uni.smokePos.y) % (2 * uni.smokeHalfSize.y) < uni.smokeHalfSize.z * uni.smokeHalfSize.y),
       uni.smokeTemp,0,0
     );
-    // smoke.x = f32();
     textureStore(smokeOld, gid, smoke);
     textureStore(smokeNew, gid, smoke);
   }
@@ -158,9 +157,11 @@ fn main(
   //   + select(textureLoad(smokeOld, pastPos_i + vec3i(0,0, 1), 0).y, 1, pastPos_i.z == i32(uni.volSize.z) - 1)
   // ) / 6.0;
 
-  newVel += vec4f(0, (temp - ambientTemp), 0, 0); // rho1 = mP/(1 + (t1 - t0)), F=(rho_surrounding - rho)*g*V
-  if (gid.x > 0) {
-    newSmoke.y = newSmoke.y - (temp - ambientTemp) * 0.001 * uni.dt; // equalize smoke temp with surroundings
+  if ((u32(uni.options) & (1 << 3)) == 0) {
+    newVel += vec4f(0, (temp - ambientTemp) * uni.dt, 0, 0); // rho1 = mP/(1 + (t1 - t0)), F=(rho_surrounding - rho)*g*V
+    if (gid.x > 0) {
+      newSmoke.y = newSmoke.y - (temp - ambientTemp) * 0.001 * uni.dt; // equalize smoke temp with surroundings
+    }
   }
 
   // interpolate and advect velocity
@@ -268,16 +269,15 @@ fn main(
   var newVel = vec4f(uni.vInflow, 0, 0, 0);
   let pastPos = gid_f - vdt;
   let pastPos_u = vec3u(floor(pastPos));
-  var newSmoke = vec4f(0,1,0,0);
+  var newSmoke = textureLoad(smokeMid, gid, 0);
 
   let advectVel = gid.x > 1 && gid.x < u32(uni.volSize.x) - 1;
 
+  // skip correction if velocity is very small to avoid precision issues
   if (all(vdt < vec3f(0.1))) {
-    // skip correction if velocity is very small to avoid precision issues
     if (advectVel) {
       newVel = textureLoad(velMid, gid, 0);
     }
-    newSmoke = textureLoad(smokeMid, gid, 0);
   } else {
     let forwardPos = gid_f + vdt;
     let forwardPosNorm = saturate((forwardPos + vec3f(0.5)) / uni.volSize); // velocity is in voxels/sec
@@ -285,6 +285,14 @@ fn main(
 
     if (advectVel) {
       newVel = advectStage2(velMid, velOld, forwardPosNorm, pastPos_u, gid);
+    }
+  }
+
+  let temp = newSmoke.y;
+  if ((u32(uni.options) & (1 << 3)) != 0) {
+    newVel += vec4f(0, (temp - 1) * uni.dt, 0, 0);
+    if (gid.x > 0) {
+      newSmoke.y = newSmoke.y - (temp - 1) * 0.001 * uni.dt; // equalize smoke temp with surroundings
     }
   }
 
@@ -566,7 +574,7 @@ fn main(
 `;
 
 // light volume shader
-// lighting direction axis aligned 3d texture, march from ray volume intersection
+// march through lighting volume z axis (lighting direction), write transmittance to light volume texture
 const lightVolumeShaderCode = /* wgsl */`
 ${uni.uniformStruct}
 
@@ -607,7 +615,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Jitter the starting depth to reduce aliasing
   let offset = pcgHash(gid.x + u32(uni.lightVolSize.x) * gid.y) * uni.lightStepSize * uni.lightDir;
   
-  var transparency = 1.0;
+  var lightAttenuation = 1.0;
 
   for (var i = 0u; i < u32(uni.lightVolSize.y); i++) {
     // Calculate normalized Z in light space
@@ -621,16 +629,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let barrier = textureSampleLevel(barrierTexture, linSampler, samplePosNorm, 0).r;
       
       if (barrier < 0.5) {
-        transparency = 0.0; // Light blocked by solid
-      } else if (transparency > 0.01) {
+        lightAttenuation = 0.0; // Light blocked by solid
+      } else if (lightAttenuation > 0.01) {
         let sampleDensity = textureSampleLevel(stateTexture, stateSampler, samplePosNorm, 0).r;
-        transparency *= exp(-sampleDensity * uni.absorption * uni.lightStepSize);
+        lightAttenuation *= exp(-sampleDensity * uni.absorption * uni.lightStepSize);
       }
     }
 
     // write to the light volume
     // gid.xy identifies the column, i is the depth
-    textureStore(lightVolume, vec3u(gid.xy, i), vec4f(transparency, 0, 0, 1.0));
+    textureStore(lightVolume, vec3u(gid.xy, i), vec4f(lightAttenuation, 0, 0, 1.0));
   }
 }
 `;
@@ -694,16 +702,19 @@ fn gradientLighting(unitVolSize: vec3f, samplePos: vec3f) -> vec4f {
   if (((u32(uni.options) & (1u << 2)) != 0)) {
     // let h = normalize(uni.lightDir + rayDir);
     let normal = -normalize(vec3f(
-      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).xyz),
-      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).xyz),
-      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).xyz) - length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).xyz)
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).xyz) -
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).xyz),
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).xyz) -
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).xyz),
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).xyz) -
+      length(textureSampleLevel(stateTexture, stateSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).xyz)
     ) + 1e-5);
-    var transparency = 1.0;
+    var lightAttenuation = 1.0;
     if (uni.visMode == 0.0) {
       let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz;
-      transparency = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
+      lightAttenuation = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
     }
-    return uni.ambientIntensity + vec4f(uni.lightColor, 0) * transparency * (saturate(dot(normal, uni.lightDir))); // + 100* pow(saturate(dot(h, normal)), 16));
+    return uni.ambientIntensity + vec4f(uni.lightColor, 0) * lightAttenuation * (saturate(dot(normal, uni.lightDir))); // + 100* pow(saturate(dot(h, normal)), 16));
   }
   return vec4f(uni.ambientIntensity);
 }
@@ -713,6 +724,27 @@ fn henyeyGreenstein(g: f32, cosTheta: f32) -> f32 {
   let denom = 1.0 + g2 - 2.0 * g * cosTheta;
   return (1.0 - g2) / (4.0 * 3.14159 * denom * sqrt(denom));
 }
+
+fn henyeyGreenstein2(g: vec2f, cosTheta: f32) -> vec2f {
+  let g2 = g * g;
+  let denom = 1.0 + g2 - 2.0 * g * cosTheta;
+  return (1.0 - g2) / (4.0 * 3.14159 * denom * sqrt(denom));
+}
+
+fn draine(g: f32, a: f32, cosTheta: f32) -> f32 {
+  let g2 = g * g;
+  let denom = 1.0 + g2 - 2.0 * g * cosTheta;
+  return (1.0 - g2) / (4.0 * 3.14159 * denom * sqrt(denom))
+    * (1 + a * cosTheta * cosTheta) / (1 + a * .33333 * (1 + 2 * g2));
+}
+
+// https://research.nvidia.com/labs/rtr/approximate-mie/
+fn approxMie(g1: f32, g2: f32, a: f32, w: f32, cosTheta: f32) -> f32 {
+  let hg = henyeyGreenstein2(vec2f(g1, g2), cosTheta);
+  return hg.x * (1 - w) + hg.y * w * (1 + a * cosTheta * cosTheta) / (1 + a * .33333 * (1 + 2 * g2 * g2));
+}
+
+const barrierColor = vec4f(0.1, 0.1, 0.1, 0);
 
 @fragment
 fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
@@ -759,9 +791,14 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
   let unitVolSize = 1 / uni.volSize;
 
   let phase = henyeyGreenstein(uni.phaseG, cosTheta);
+  // let phase = draine(0.2, 10, cosTheta);
+  // let phase = approxMie(0.92, 0.15, 4.5, 0.99, cosTheta);
+
+
+  var transparency = 1.0;
 
   loop {
-    if (remainingDist <= 0.0 || color.a >= 0.95) { break; }
+    if (remainingDist <= 0.0 || color.a >= 0.95) { break; } // also break if transparency is near 0
 
     let adjDt = min(rayDt, remainingDist);
     let samplePos = rayPos;
@@ -780,18 +817,22 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
       // Barrier blend
       if (enableLighting) {
         let normal = -normalize(vec3f(
-          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).x,
-          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).x,
-          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).x - textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).x
+          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(unitVolSize.x, 0, 0), 0).x -
+          textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(unitVolSize.x, 0, 0), 0).x,
+          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, unitVolSize.y, 0), 0).x -
+          textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, unitVolSize.y, 0), 0).x,
+          textureSampleLevel(barrierTexture, linSampler, samplePos + vec3f(0, 0, unitVolSize.z), 0).x -
+          textureSampleLevel(barrierTexture, linSampler, samplePos - vec3f(0, 0, unitVolSize.z), 0).x
         ));
-        var transparency = 1.0;
+        var lightAttenuation = 1.0;
         if (uni.visMode == 0.0) {
           // prevent shadow acne by offsetting the sample position towards the light source based on the angle between the normal and light direction
           let sampleOffset = vec3f(offset, offset, 5 * max(length(cross(normal, uni.lightDir)) / dot(normal, uni.lightDir + 1e-5), 1)) / uni.lightVolSize.xxy;
           let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz - sampleOffset; // offset towards light to avoid self-shadowing artifacts
-          transparency = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
+          lightAttenuation = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
         }
-        color += blendFactor * 2 * (uni.ambientIntensity + vec4f(uni.lightColor, 0) * transparency * saturate(dot(-normal, uni.lightDir)));
+        color += transparency * barrierColor * (uni.ambientIntensity + vec4f(uni.lightColor * 0.1, 0) * lightAttenuation * saturate(dot(-normal, uni.lightDir)));
+        transparency = 0;
       } else {
         color += blendFactor; // Barrier color
       }
@@ -814,20 +855,23 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
       if (uni.visMode == 0.0) {
         if (enableLighting) {
+          transparency *= exp(-adjDt * uni.absorption * sampleValue);
+          // sample the light volume with jitter to reduce aliasing, and do a 4-sample filter for smoother lighting
           let invLightVolSize = 1.0 / uni.lightVolSize.x;
           let lightOffset = vec2f(fract(fragCoord * 0.5) > vec2f(0.25)) * invLightVolSize * 0.5; // small jitter to reduce light volume aliasing
 
           let lightSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz + vec3f(lightOffset, 0);
           let lightSampleOffset = vec3f(-0.5, 0.25, 0) * invLightVolSize; // 4-sample filter offset in light volume UV space
-          let transparency = (
+          let lightAttenuation = (
             textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.xyz, 0).x +
             textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.yyz, 0).x +
             textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.xxz, 0).x +
             textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.yxz, 0).x
           ) * 0.25; // 4-sample filter for light volume
 
-          let sampleLighting = 2 * vec3f(sampleValue) * (uni.ambientIntensity + 10 * vec3f(uni.lightColor) * transparency * phase);
-          sampleColor = abs(vec4f(sampleLighting, 10 * a));
+          let litSample = vec3f(sampleValue) * (uni.ambientIntensity + vec3f(2 * uni.lightColor) * lightAttenuation * phase) * transparency * adjDt;
+          color += vec4f(litSample, 0);
+          continue;
         } else {
           sampleColor = saturate(abs(vec4f(sampleValue, sampleValue, sampleValue, a))) * 10;
         }
@@ -860,12 +904,12 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
     // render isosurface
     if (isoHit) {
-      color += blendFactor * 2 * vec4f(sampleColor.xyz, 1) * gradientLighting(unitVolSize, samplePos);
+      color += blendFactor * 2 * vec4f(sampleColor.rgb, 1) * gradientLighting(unitVolSize, samplePos);
       break;
     }
 
     // Exponential blending
-    color += (1.0 - color.a) * (1.0 - exp(-sampleColor.a * adjDt)) * vec4f(sampleColor.xyz, 1);
+    color += (1.0 - color.a) * (1.0 - exp(-sampleColor.a * adjDt)) * vec4f(sampleColor.rgb, 1);
   }
   return linear2srgb(color);
 }

@@ -46,6 +46,32 @@ uni.addUniform("absorption", "f32");      // absorption coefficient
 // visMode, options, pressureLocalIter, smokePos can be packed
 uni.finalize();
 
+
+function pack4Bytes(i1, i2, i3, i4) {
+  // Combine 4 bytes into one 32-bit integer
+  const int32 = (i1 << 24) | (i2 << 16) | (i3 << 8) | i4;
+  
+  // Use TypeArray to reinterpret the bits as a float
+  const buffer = new ArrayBuffer(4);
+  const view = new DataView(buffer);
+  view.setUint32(0, int32);
+  return view.getFloat32(0);
+}
+function unpack4Bytes(float32) {
+  const buffer = new ArrayBuffer(4);
+  const view = new DataView(buffer);
+  view.setFloat32(0, float32);
+  const int32 = view.getUint32(0);
+  
+  return [
+    (int32 >> 24) & 0xFF,
+    (int32 >> 16) & 0xFF,
+    (int32 >> 8) & 0xFF,
+    int32 & 0xFF
+  ];
+}
+
+
 const storage = {
   velTex0: null,
   velTex1: null,
@@ -68,8 +94,11 @@ let renderTextureIdx = 4, pingPong = true;
 let dt = 1;
 let oldDt;
 
-let options = 1 | (1 << 2); // barrier rendering and lighting on, isosurface off
-
+// 0 barrier rendering on
+// 1 isosurface off
+// 2 lighting on
+// 3 maccormack advection on
+let options = 1 | (1 << 2) | (1 << 3);
 let advectionMode = 0; // 0: MacCormack, 1: Semi-Lagrangian
 
 let pressureGlobalIter = pressureGlobalIterTemp = 4;
@@ -109,9 +138,9 @@ let lighting = true;
 let lightAzimuth = toRad(135);
 let lightElevation = toRad(45);
 let lightDir = vec3.normalize(sphericalToCartesian(lightAzimuth, lightElevation, 1));
-let lightIntensity = 5;
+let lightIntensity = 10;
 let lightColor = vec3.fromValues(1, 1, 1);
-let ambientIntensity = 1;
+let ambientIntensity = 0.2;
 
 let lightingTexSize = 256;
 let maxLightingSteps = 256;
@@ -313,11 +342,14 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     switch (value) {
       case "MacCormack (2nd order)":
         advectionMode = 0;
+        options |= (1 << 3);
         break;
       case "Semi-Lagrangian (1st order)":
         advectionMode = 1;
+        options &= ~(1 << 3);
         break;
     }
+    uni.values.options.set([options]);
   });
   gui.addNumericInput("pressureGlobalIter", true, "Press. global iter", { min: 2, max: 16, step: 1, val: pressureGlobalIter, float: 0 }, "simCtrl", (value) => pressureGlobalIterTemp = value, "Global pressure solver iterations per frame");
   gui.addNumericInput("pressureLocalIter", true, "Press. local iter", { min: 1, max: 16, step: 1, val: 1, float: 0 }, "simCtrl", (value) => uni.values.pressureLocalIter.set([value]), "Local pressure solver iterations per global iter.");
@@ -404,7 +436,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     "DoubleSlit": ["slitWidth", "slitSpacing", "slitHeight", "barrierThickness"],
   });
 
-  gui.addCheckbox("doAutoUpdate", "Auto update", true, "presets", (checked) => doAutoUpdate = checked);
+  gui.addCheckbox("doAutoUpdate", "Auto update", true, "presets", (checked) => doAutoUpdate = checked); // todo: preview instead of immediately applying
 
   gui.addButton("updatePreset", "Load preset", false, "presets", () => refreshPreset(false));
   gui.addButton("clearUpdatePreset", "Clear & load", false, "presets", () => refreshPreset(true));
@@ -471,7 +503,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     lightElevation = toRad(value);
     updateLight(lightAzimuth, lightElevation);
   });
-  gui.addNumericInput("lightIntensity", true, "Intensity", { min: 0, max: 10, step: 0.1, val: lightIntensity, float: 1 }, "lightCtrl", (value) => {
+  gui.addNumericInput("lightIntensity", true, "Intensity", { min: 0, max: 20, step: 0.1, val: lightIntensity, float: 1 }, "lightCtrl", (value) => {
     lightIntensity = value;
     uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
   });
@@ -487,7 +519,7 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
     lightColor[2] = value;
     uni.values.lightColor.set(vec3.scale(lightColor, lightIntensity));
   });
-  gui.addNumericInput("ambientIntensity", true, "Ambient", { min: 0, max: 10, step: 0.1, val: ambientIntensity, float: 1 }, "lightCtrl", (value) => {
+  gui.addNumericInput("ambientIntensity", true, "Ambient", { min: 0, max: 2, step: 0.01, val: ambientIntensity, float: 2 }, "lightCtrl", (value) => {
     ambientIntensity = value;
     uni.values.ambientIntensity.set([ambientIntensity]);
   });
