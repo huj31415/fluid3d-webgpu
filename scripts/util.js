@@ -370,31 +370,31 @@ const gui = new GUI("3D fluid sim on WebGPU", canvas);
 
 {
   gui.addGroup("smokeCtrl", "Smoke settings");
-    gui.addNumericInput("smokePZ", true, "Z pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
-    smokePos[0] = Math.round(value * simulationDomain[1]);
-    uni.values.smokePos.set(smokePos);
-    clearPressureRefreshSmoke = true;
-  }, "Smoke source Y-coordinate normalized to simulation YZ plane");
   gui.addNumericInput("smokePY", true, "Y pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
     smokePos[1] = Math.round(value * simulationDomain[2]);
     uni.values.smokePos.set(smokePos);
     clearPressureRefreshSmoke = true;
   }, "Smoke source Z-coordinate normalized to simulation YZ plane");
-  gui.addNumericInput("smokeSY", true, "Y size", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[0] * 2 / simulationDomain[1], float: 2 }, "smokeCtrl", (value) => {
+  gui.addNumericInput("smokePZ", true, "Z pos", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
+    smokePos[0] = Math.round(value * simulationDomain[1]);
+    uni.values.smokePos.set(smokePos);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source Y-coordinate normalized to simulation YZ plane");
+  gui.addNumericInput("smokeSY", true, "Y size", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
+    smokeHalfSize[2] = 2 * value;
+    uni.values.smokeHalfSize.set(smokeHalfSize);
+    clearPressureRefreshSmoke = true;
+  }, "Smoke source Y size normalized to Y spacing");
+  gui.addNumericInput("smokeSZ", true, "Z size", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[0] * 2 / simulationDomain[1], float: 2 }, "smokeCtrl", (value) => {
     smokeHalfSize[0] = Math.ceil(value * simulationDomain[1] / 2);
     uni.values.smokeHalfSize.set(smokeHalfSize);
     clearPressureRefreshSmoke = true;
-  }, "Smoke source Y size normalized to simulation YZ plane");
+  }, "Smoke source Z size normalized to simulation YZ plane");
   gui.addNumericInput("smokeSZ", true, "Z spacing", { min: 0, max: 1, step: 0.01, val: smokeHalfSize[1] * 2 / simulationDomain[2], float: 2 }, "smokeCtrl", (value) => {
     smokeHalfSize[1] = Math.ceil(value * simulationDomain[2] / 2);
     uni.values.smokeHalfSize.set(smokeHalfSize);
     clearPressureRefreshSmoke = true;
   }, "Smoke source Z spacing normalized to simulation YZ plane");
-  gui.addNumericInput("smokeSZ", true, "Z size", { min: 0, max: 1, step: 0.01, val: 0.5, float: 2 }, "smokeCtrl", (value) => {
-    smokeHalfSize[2] = 2 * value;
-    uni.values.smokeHalfSize.set(smokeHalfSize);
-    clearPressureRefreshSmoke = true;
-  }, "Smoke source Z size normalized to Z spacing");
   gui.addNumericInput("smokeTemp", true, "Temperature", { min: 0, max: 2, step: 0.01, val: 1, float: 2 }, "smokeCtrl", (value) => {
     uni.values.smokeTemp.set([value]);
     clearPressureRefreshSmoke = true;

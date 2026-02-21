@@ -170,6 +170,7 @@ fn main(
 }
 `;
 
+// 2.28 ms
 const mcAdvectionShaderCode2 = (readOrWriteFormat = 16, readAndWriteFormat = 16) => /* wgsl */`
 ${uni.uniformStruct}
 
@@ -413,7 +414,7 @@ override WG_Z: u32;
 var<workgroup> tile: array<f16, (WG_X + 2) * (WG_Y + 2) * (WG_Z + 2)>;
 
 fn tileIndex(idx: vec3i) -> u32 {
-  let sidx = vec3u(idx + vec3i(1)); // shift by 1 for halo
+  let sidx = vec3u(idx + 1); // shift by 1 for halo
   return sidx.x + (WG_X + 2u) * (sidx.y + (WG_Y + 2u) * sidx.z);
 }
 
@@ -455,37 +456,29 @@ fn main(
   // load into shared memory
   tile[currentTileIndex] = pressureValue;
 
-  // for (var d = 0; d < 6; d = d + 1) {
-  //   let dir = directions[d];
-  //   let haloIdx = tileIndex(lid_i + dir);
-  //   let g = gid_i + dir; // global neighbor index
-  //   if (all(g >= vec3i(0)) && all(g < vec3i(uni.volSize))) {
-  //     tile[haloIdx] = f16(textureLoad(pressure, g).r);
-  //   } else {
-  //     tile[haloIdx] = 0.0; // boundary condition (or mirror)
-  //   }
-  // }
+  let domainBoundary0 = gid > vec3u(0);
+  let domainBoundary1 = gid < vec3u(uni.volSize - 1);
   if (lid.x == 0u) {
-    tile[tileIndex(lid_i + vec3i(-1, 0, 0))] = f16(textureLoad(pressure, gid_i + vec3i(-1, 0, 0)).r); 
+    tile[tileIndex(lid_i + vec3i(-1, 0, 0))] = f16(domainBoundary0.x) * f16(textureLoad(pressure, gid_i + vec3i(-1, 0, 0)).r); 
   }
   if (lid.x == WG_X - 1u) {
-    tile[tileIndex(lid_i + vec3i(1, 0, 0))] = f16(textureLoad(pressure, gid_i + vec3i(1, 0, 0)).r);
+    tile[tileIndex(lid_i + vec3i(1, 0, 0))] = f16(domainBoundary1.x) * f16(textureLoad(pressure, gid_i + vec3i(1, 0, 0)).r);
   }
 
   // Check Y-axis halos
   if (lid.y == 0u) {
-    tile[tileIndex(lid_i + vec3i(0, -1, 0))] = f16(textureLoad(pressure, gid_i + vec3i(0, -1, 0)).r);
+    tile[tileIndex(lid_i + vec3i(0, -1, 0))] = f16(domainBoundary0.y) * f16(textureLoad(pressure, gid_i + vec3i(0, -1, 0)).r);
   }
   if (lid.y == WG_Y - 1u) {
-    tile[tileIndex(lid_i + vec3i(0, 1, 0))] = f16(textureLoad(pressure, gid_i + vec3i(0, 1, 0)).r);
+    tile[tileIndex(lid_i + vec3i(0, 1, 0))] = f16(domainBoundary1.y) * f16(textureLoad(pressure, gid_i + vec3i(0, 1, 0)).r);
   }
 
   // Check Z-axis halos
   if (lid.z == 0u) {
-    tile[tileIndex(lid_i + vec3i(0, 0, -1))] = f16(textureLoad(pressure, gid_i + vec3i(0, 0, -1)).r);
+    tile[tileIndex(lid_i + vec3i(0, 0, -1))] = f16(domainBoundary0.z) * f16(textureLoad(pressure, gid_i + vec3i(0, 0, -1)).r);
   }
   if (lid.z == WG_Z - 1u) {
-    tile[tileIndex(lid_i + vec3i(0, 0, 1))] = f16(textureLoad(pressure, gid_i + vec3i(0, 0, 1)).r);
+    tile[tileIndex(lid_i + vec3i(0, 0, 1))] = f16(domainBoundary1.z) * f16(textureLoad(pressure, gid_i + vec3i(0, 0, 1)).r);
   }
   workgroupBarrier();
 
@@ -529,14 +522,6 @@ override WG_X: u32;
 override WG_Y: u32;
 override WG_Z: u32;
 
-// 2 wide halo may have better stability
-var<workgroup> tile: array<f32, (WG_X + 2) * (WG_Y + 2) * (WG_Z + 2)>;
-
-fn tileIndex(idx: vec3i) -> u32 {
-  let sidx = vec3u(idx + vec3i(1)); // shift by 1 for halo
-  return sidx.x + (WG_X + 2u) * (sidx.y + (WG_Y + 2u) * sidx.z);
-}
-
 // Pressure projection compute shader
 @compute @workgroup_size(WG_X, WG_Y, WG_Z)
 fn main(
@@ -567,7 +552,7 @@ fn main(
 
   if (gid.x < u32(uni.volSize.x - 1)) { oldVel -= pressureGrad; }
 
-  let newVel = select(oldVel, vec3f(uni.vInflow, 0, 0), gid.x == 0) * vec3f(vMask);
+  let newVel = select(oldVel, vec3f(uni.vInflow, 0, 0), gid.x == 0) * vec3f(vMask); // || gid.x == u32(uni.volSize.x - 1)
 
   textureStore(velNew, gid, vec4f(newVel, 0.0));
 }
@@ -796,9 +781,15 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
 
 
   var transparency = 1.0;
+  
+  let invLightVolSize = 1.0 / uni.lightVolSize.x;
+  let lightOffset = vec2f(fract(fragCoord * 0.5) > vec2f(0.25)) * invLightVolSize * 0.5; // small jitter to reduce light volume aliasing
+
+  let barrierLight = vec4f(uni.lightColor * 0.1, 0);
+  let volumeLight = vec3f(uni.lightColor * 2);
 
   loop {
-    if (remainingDist <= 0.0 || color.a >= 0.95) { break; } // also break if transparency is near 0
+    if (remainingDist <= 0.0 || color.a >= 0.95 || transparency <= 0.01) { break; }
 
     let adjDt = min(rayDt, remainingDist);
     let samplePos = rayPos;
@@ -828,10 +819,12 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
         if (uni.visMode == 0.0) {
           // prevent shadow acne by offsetting the sample position towards the light source based on the angle between the normal and light direction
           let sampleOffset = vec3f(offset, offset, 5 * max(length(cross(normal, uni.lightDir)) / dot(normal, uni.lightDir + 1e-5), 1)) / uni.lightVolSize.xxy;
-          let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz - sampleOffset; // offset towards light to avoid self-shadowing artifacts
+
+          // offset towards light to avoid self-shadowing artifacts
+          let lightingSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz - sampleOffset;
           lightAttenuation = textureSampleLevel(lightVolume, linSampler, lightingSamplePos, 0).x;
         }
-        color += transparency * barrierColor * (uni.ambientIntensity + vec4f(uni.lightColor * 0.1, 0) * lightAttenuation * saturate(dot(-normal, uni.lightDir)));
+        color += transparency * barrierColor * (uni.ambientIntensity + barrierLight * lightAttenuation * saturate(dot(-normal, uni.lightDir)));
         transparency = 0;
       } else {
         color += blendFactor; // Barrier color
@@ -857,8 +850,6 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
         if (enableLighting) {
           transparency *= exp(-adjDt * uni.absorption * sampleValue);
           // sample the light volume with jitter to reduce aliasing, and do a 4-sample filter for smoother lighting
-          let invLightVolSize = 1.0 / uni.lightVolSize.x;
-          let lightOffset = vec2f(fract(fragCoord * 0.5) > vec2f(0.25)) * invLightVolSize * 0.5; // small jitter to reduce light volume aliasing
 
           let lightSamplePos = (uni.worldToLight * vec4f(samplePos * uni.volSizeNorm, 1)).xyz + vec3f(lightOffset, 0);
           let lightSampleOffset = vec3f(-0.5, 0.25, 0) * invLightVolSize; // 4-sample filter offset in light volume UV space
@@ -869,7 +860,7 @@ fn fs(@location(0) fragCoord: vec2f) -> @location(0) vec4f {
             textureSampleLevel(lightVolume, linSampler, lightSamplePos + lightSampleOffset.yxz, 0).x
           ) * 0.25; // 4-sample filter for light volume
 
-          let litSample = vec3f(sampleValue) * (uni.ambientIntensity + vec3f(2 * uni.lightColor) * lightAttenuation * phase) * transparency * adjDt;
+          let litSample = vec3f(sampleValue) * (uni.ambientIntensity + volumeLight * lightAttenuation * phase) * transparency * adjDt;
           color += vec4f(litSample, 0);
           continue;
         } else {
