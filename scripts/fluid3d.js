@@ -278,7 +278,7 @@ texture-formats-tier1: ${textureTier1}
 
   const velDivComputeBindGroups = [
     velDivComputeBindGroup(storage.velTex1),
-    // velDivComputeBindGroup(storage.velTex0)
+    velDivComputeBindGroup(storage.velTex0)
   ];
 
   const pressureComputePipeline = newComputePipeline(pressureShaderCode, "pressure");
@@ -474,6 +474,11 @@ texture-formats-tier1: ${textureTier1}
       }
 
       createComputePass(projectionComputeTimingHelper.beginComputePass(encoder), projectionComputePipeline, projectionComputeBindGroups[0]);
+
+      // update divergence after projection for visualization
+      if (gui.io.visType.value == "Divergence") {
+        createComputePass(encoder.beginComputePass(), velDivComputePipeline, velDivComputeBindGroups[1]);
+      }
 
       switch (advectionMode) {
         case 0:
